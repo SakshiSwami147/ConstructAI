@@ -1,0 +1,24 @@
+material_id,name,category,unit,rate_inr,wastage_pct
+M001,Cement OPC 43 grade (50 kg bag),Cement & aggregates,bag,400,3
+M002,Sand (river / M-sand),Cement & aggregates,m3,1800,5
+M003,Coarse aggregate 20 mm,Cement & aggregates,m3,1600,3
+M004,TMT rebar Fe500,Steel,kg,65,3
+M005,Binding wire,Steel,kg,80,5
+M006,Burnt clay bricks (19x9x9 cm),Masonry,nos,9,5
+M007,Shuttering plywood 12 mm (8x4 ft),Formwork,sheet,1400,0
+M008,Nails,Formwork,kg,90,5
+M009,Vitrified tiles 600x600 mm,Flooring & tiling,m2,550,7
+M010,Anti-skid ceramic tiles 300x300 mm,Flooring & tiling,m2,400,7
+M011,Glazed wall tiles 300x450 mm,Flooring & tiling,m2,420,7
+M012,Tile adhesive (cement based),Flooring & tiling,kg,18,5
+M013,Tile grout,Flooring & tiling,kg,60,5
+M014,Interior acrylic emulsion paint,Paint & finishes,L,350,5
+M015,Exterior weatherproof paint,Paint & finishes,L,420,5
+M016,Primer,Paint & finishes,L,220,5
+M017,Wall putty,Paint & finishes,kg,28,5
+M018,Flush door shutter 0.9x2.1 m,Doors & windows,nos,3500,0
+M019,Solid main door shutter 0.9x2.1 m,Doors & windows,nos,12000,0
+M020,Wooden door frame (set),Doors & windows,nos,3500,0
+M021,Butt hinge,Hardware,nos,60,0
+M022,Mortise lock set,Hardware,nos,900,0
+M023,Aluminium sliding window with glass,Doors & windows,m2,4500,3

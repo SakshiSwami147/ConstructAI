@@ -1,0 +1,54 @@
+work_key,match_text,unit,default_mm,material_id,qty_per_unit,note
+slab,RCC slab concrete,m3,,M001,8.0,M20 nominal mix
+slab,RCC slab concrete,m3,,M002,0.42,
+slab,RCC slab concrete,m3,,M003,0.84,
+formwork,formwork shuttering slab soffit,m2,,M007,0.09,about 4 reuses
+formwork,formwork shuttering slab soffit,m2,,M008,0.03,
+steel,reinforcement steel slab,kg,,M004,1.0,
+steel,reinforcement steel slab,kg,,M005,0.012,
+masonry,brick block masonry thick external internal walls,m2,230,M006,500,per m3 of wall
+masonry,brick block masonry thick external internal walls,m2,230,M001,1.3,1:6 mortar
+masonry,brick block masonry thick external internal walls,m2,230,M002,0.274,
+lintel,RCC lintel over openings,m,,M001,0.28,230x150 lintel
+lintel,RCC lintel over openings,m,,M002,0.0145,
+lintel,RCC lintel over openings,m,,M003,0.029,
+lintel,RCC lintel over openings,m,,M004,2.8,80 kg/m3
+lintel,RCC lintel over openings,m,,M005,0.03,
+floor_vit,vitrified tile flooring dry areas,m2,,M009,1,
+floor_vit,vitrified tile flooring dry areas,m2,,M012,4.5,
+floor_vit,vitrified tile flooring dry areas,m2,,M013,0.3,
+floor_skid,anti skid ceramic tile flooring wet areas,m2,,M010,1,
+floor_skid,anti skid ceramic tile flooring wet areas,m2,,M012,4.5,
+floor_skid,anti skid ceramic tile flooring wet areas,m2,,M013,0.3,
+bed,cement mortar bed under flooring,m2,40,M001,7.49,"1:4 mortar, per m3"
+bed,cement mortar bed under flooring,m2,40,M002,1.04,
+skirting,tile skirting high,m,,M009,0.1,100 mm cut tile
+skirting,tile skirting high,m,,M012,0.5,
+plaster_ext,external wall plaster,m2,20,M001,7.49,"1:4 mortar, per m3"
+plaster_ext,external wall plaster,m2,20,M002,1.04,
+paint_ext,external weatherproof paint,m2,,M015,0.18,2 coats
+paint_ext,external weatherproof paint,m2,,M016,0.08,
+plaster_int,internal wall plaster,m2,12,M001,6.24,"1:5 mortar, per m3"
+plaster_int,internal wall plaster,m2,12,M002,1.083,
+paint_int,interior emulsion paint coats,m2,,M014,0.17,2 coats
+paint_int,interior emulsion paint coats,m2,,M016,0.08,
+paint_int,interior emulsion paint coats,m2,,M017,0.6,
+plaster_ceil,ceiling plaster,m2,10,M001,6.24,"1:5 mortar, per m3"
+plaster_ceil,ceiling plaster,m2,10,M002,1.083,
+paint_ceil,ceiling paint coats,m2,,M014,0.17,2 coats
+paint_ceil,ceiling paint coats,m2,,M016,0.08,
+paint_ceil,ceiling paint coats,m2,,M017,0.6,
+tiles_wall,glazed wall tiles bathrooms,m2,,M011,1,
+tiles_wall,glazed wall tiles bathrooms,m2,,M012,4,
+tiles_wall,glazed wall tiles bathrooms,m2,,M013,0.3,
+door_int,door internal,nos,,M018,1,
+door_int,door internal,nos,,M020,1,
+door_int,door internal,nos,,M021,3,
+door_int,door internal,nos,,M022,1,
+door_ext,door external,nos,,M019,1,
+door_ext,door external,nos,,M020,1,
+door_ext,door external,nos,,M021,3,
+door_ext,door external,nos,,M022,1,
+door_area,door area glazing shutter costing,m2,,NONE,0,info line: doors are bought per number
+window_nos,window external internal,nos,,NONE,0,info line: windows are bought per m2 (see window area)
+window_area,window area glazing shutter costing,m2,,M023,1,
