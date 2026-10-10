@@ -1,6 +1,14 @@
 from decimal import Decimal
 
+from enum import Enum
+
 from pydantic import AliasChoices, BaseModel, Field
+
+
+class ElementReviewStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class Dimensions(BaseModel):
@@ -25,6 +33,9 @@ class ExtractedElement(BaseModel):
     source_page: int | None = Field(default=None, ge=1)
     source_reference: str | None = None
     confidence: float = Field(ge=0, le=1)
+    dimensions_source: str | None = None
+    review_status: ElementReviewStatus = ElementReviewStatus.PENDING
+    review_reasons: list[str] = Field(default_factory=list)
 
     @property
     def category(self) -> str:
@@ -38,3 +49,4 @@ class ExtractionResult(BaseModel):
 
     source_name: str
     elements: list[ExtractedElement]
+    extraction_id: str | None = None

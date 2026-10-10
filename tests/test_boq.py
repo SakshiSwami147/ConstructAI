@@ -86,7 +86,7 @@ def test_boq_schema_rejects_negative_quantity() -> None:
         )
 
 
-def test_boq_endpoint_accepts_extraction_json() -> None:
+def test_boq_endpoint_rejects_untracked_extraction_payload() -> None:
     response = TestClient(app).post(
         "/boq",
         json={
@@ -105,6 +105,5 @@ def test_boq_endpoint_accepts_extraction_json() -> None:
         },
     )
 
-    assert response.status_code == 200
-    assert response.json()["items"][0]["quantity"] == 13.5
-    assert response.json()["items"][0]["source_page"] == 2
+    assert response.status_code == 409
+    assert "reviewed in a server session" in response.json()["detail"]

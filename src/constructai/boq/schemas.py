@@ -44,3 +44,5 @@ class BOQ(BaseModel):
     status: BOQStatus = BOQStatus.DRAFT
     items: list[BOQItem]
     validation_issues: list[BOQValidationIssue] = Field(default_factory=list)
+    boq_id: str | None = None
+    extraction_id: str | None = None

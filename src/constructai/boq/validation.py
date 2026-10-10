@@ -1,5 +1,5 @@
 from constructai.boq.schemas import BOQ, BOQValidationIssue, ValidationSeverity
-from constructai.extraction.schemas import ExtractionResult
+from constructai.extraction.schemas import ElementReviewStatus, ExtractionResult
 
 
 SUPPORTED_UNITS = {"m", "lm", "linear m", "m2", "m²", "sqm", "m3", "m³", "cum", "pcs", "unit", "kg", "ton", "l", "litre"}
@@ -16,6 +16,10 @@ class BOQValidator:
 
         for index, element in enumerate(extraction.elements, start=1):
             prefix = f"elements[{index - 1}]"
+            if element.review_status is ElementReviewStatus.PENDING:
+                issues.append(self._error(f"{prefix}.review_status", "Element requires explicit human review"))
+            elif element.review_status is ElementReviewStatus.REJECTED:
+                issues.append(self._error(f"{prefix}.review_status", "Rejected elements cannot be used in a BOQ"))
             if not element.element_type.strip():
                 issues.append(self._error(f"{prefix}.element_type", "Element type is required"))
             if not element.description.strip():

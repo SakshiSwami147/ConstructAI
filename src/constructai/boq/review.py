@@ -8,6 +8,7 @@ from constructai.boq.validation import BOQValidator
 
 class BOQItemEdit(BaseModel):
     description: str | None = None
+    element_type: str | None = None
     quantity: Decimal | None = Field(default=None, ge=0)
     unit: str | None = None
 
@@ -34,12 +35,17 @@ class BOQReviewService:
         updated_item = current.model_copy(update=updates)
         items = list(boq.items)
         items[item_index] = BOQItem.model_validate(updated_item)
-        issues = self._validator.validate_boq(boq.model_copy(update={"items": items}))
-        return boq.model_copy(update={"items": items, "validation_issues": issues})
+        edited_boq = boq.model_copy(update={"items": items})
+        retained_issues = [
+            issue for issue in boq.validation_issues
+            if issue.field.startswith("elements[") or issue.field == "source_name"
+        ]
+        issues = retained_issues + self._validator.validate_boq(edited_boq)
+        return boq.model_copy(update={"items": items, "status": BOQStatus.DRAFT, "validation_issues": issues})
 
     def approve(self, boq: BOQ) -> BOQ:
         self._require_status(boq, BOQStatus.REVIEW)
-        issues = self._validator.validate_boq(boq)
+        issues = boq.validation_issues + self._validator.validate_boq(boq)
         errors = [issue for issue in issues if issue.severity is ValidationSeverity.ERROR]
         if errors:
             raise ValueError("BOQ has validation errors and cannot be approved")

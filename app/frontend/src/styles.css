@@ -76,6 +76,8 @@ h2 { margin-bottom: 8px; font-size: 25px; letter-spacing: -.045em; }
 .primary-button:disabled { cursor: wait; opacity: .55; }
 .secondary-button { border: 1px solid #bac6bd; color: #17221f; background: transparent; }
 .secondary-button:hover { border-color: #17221f; }
+.row-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 8px; }
+.row-actions .secondary-button { padding: 7px 9px; white-space: nowrap; }
 .error-banner { display: flex; align-items: center; gap: 14px; max-width: 1000px; margin: -24px 0 27px; padding: 13px 16px; color: #a64e2e; background: #f9e6df; font-size: 11px; }
 .error-banner strong { font-size: 11px; }
 .error-banner span { color: #9a6958; }
@@ -91,8 +93,12 @@ th { padding: 12px 10px; color: #89958c; font: 9px 'DM Mono', monospace; letter-
 td { padding: 13px 10px; border-top: 1px solid #dce2dc; color: #526159; font-size: 11px; vertical-align: middle; }
 td input { width: 100%; border: 1px solid transparent; padding: 7px 6px; color: #17221f; background: transparent; font-size: 11px; }
 td input:focus { outline: 1px solid #d26a3e; background: #fff; }
+td input::placeholder { color: #a0aaa2; font-size: 9px; }
+td select { width: 100%; min-width: 86px; border: 1px solid #dce2dc; padding: 7px 5px; color: #17221f; background: #f8faf7; font-size: 10px; }
+td select:focus { outline: 1px solid #d26a3e; }
 .number-cell, .calculation, .confidence-value { color: #829087; font: 10px 'DM Mono', monospace; }
 .quantity-input { max-width: 76px; }
+.dimension-input { min-width: 90px; }
 .unit-input { max-width: 58px; }
 .element-main small { display: block; margin-top: 7px; color: #8c978f; font: 9px 'DM Mono', monospace; }
 .source-page { color: #d26a3e; font: 10px 'DM Mono', monospace; }

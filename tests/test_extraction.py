@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import cv2
+import numpy as np
 from fastapi.testclient import TestClient
 
 from app.backend.main import app
@@ -31,6 +33,24 @@ def test_extraction_endpoint_accepts_drawing_upload() -> None:
 
     assert response.status_code == 200
     assert response.json()["elements"][0]["specification"] == "200mm concrete block"
+
+
+def test_extraction_endpoint_accepts_floorplan_images() -> None:
+    client = TestClient(app)
+    image = np.full((700, 900, 3), 255, dtype=np.uint8)
+    cv2.rectangle(image, (60, 60), (420, 90), (0, 0, 0), thickness=10)
+    cv2.rectangle(image, (80, 180), (160, 420), (0, 0, 0), thickness=10)
+    cv2.rectangle(image, (520, 120), (610, 300), (0, 0, 0), thickness=10)
+    cv2.rectangle(image, (650, 200), (790, 260), (0, 0, 0), thickness=10)
+    _, encoded = cv2.imencode(".png", image)
+
+    response = client.post(
+        "/extractions",
+        files={"file": ("sample_floorplan.png", encoded.tobytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["elements"]
 
 
 def test_extraction_endpoint_rejects_unsupported_files() -> None:

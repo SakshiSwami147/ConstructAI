@@ -4,6 +4,7 @@ from pathlib import Path
 
 from constructai.extraction.providers import DocumentTextProvider
 from constructai.extraction.schemas import Dimensions, ExtractedElement, ExtractionResult
+from constructai.extraction.vision import OpenCVFloorPlanDetector, SUPPORTED_VISUAL_EXTENSIONS
 
 
 class ExtractionAgent:
@@ -11,14 +12,34 @@ class ExtractionAgent:
 
     _element_pattern = re.compile(r"ELEMENT\|(?P<fields>[^\n<]+)")
 
-    def __init__(self, providers: list[DocumentTextProvider]) -> None:
-        self._providers = {extension: provider for provider in providers for extension in provider.supported_extensions}
+    def __init__(
+        self,
+        providers: list[DocumentTextProvider] | None = None,
+        *,
+        vision_detector: OpenCVFloorPlanDetector | None = None,
+    ) -> None:
+        self._providers = {
+            extension: provider
+            for provider in (providers or [])
+            for extension in provider.supported_extensions
+        }
+        self._vision_detector = vision_detector
 
     def extract(self, source: Path) -> ExtractionResult:
-        provider = self._providers.get(source.suffix.lower())
+        suffix = source.suffix.lower()
+
+        if suffix in SUPPORTED_VISUAL_EXTENSIONS:
+            if self._vision_detector is None:
+                self._vision_detector = OpenCVFloorPlanDetector()
+            elements = self._vision_detector.detect(source)
+            return ExtractionResult(source_name=source.name, elements=elements)
+
+        provider = self._providers.get(suffix)
         if provider is None:
             supported = ", ".join(sorted(self._providers))
-            raise ValueError(f"Unsupported drawing format '{source.suffix}'. Supported formats: {supported}")
+            raise ValueError(
+                f"Unsupported drawing format '{source.suffix}'. Supported formats: {supported}"
+            )
 
         pages = provider.extract_pages(source)
         elements = [
