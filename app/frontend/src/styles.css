@@ -87,6 +87,9 @@ h2 { margin-bottom: 8px; font-size: 25px; letter-spacing: -.045em; }
 .issues span { padding: 8px 10px; font: 10px 'DM Mono', monospace; }
 .issues .error { color: #a64e2e; background: #f9e6df; }
 .issues .warning { color: #94732c; background: #f7efd9; }
+.validation-details { display: grid; gap: 6px; width: 100%; }
+.validation-details summary { width: fit-content; padding: 5px 0; color: #58675e; cursor: pointer; font: 10px 'DM Mono', monospace; }
+.validation-details > span { display: block; }
 .table-wrap { max-width: 1120px; overflow-x: auto; border-top: 1px solid #bfcac1; border-bottom: 1px solid #bfcac1; }
 table { width: 100%; min-width: 900px; border-collapse: collapse; text-align: left; }
 th { padding: 12px 10px; color: #89958c; font: 9px 'DM Mono', monospace; letter-spacing: .08em; text-transform: uppercase; }

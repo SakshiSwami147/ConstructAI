@@ -197,6 +197,9 @@ def test_bom_mapping_errors_are_reported_for_review(review_session) -> None:
     assert bom["validation"]["status"] == "blocked"
     assert bom["validation"]["errors"]
     assert bom["mapping"][0]["Status"] == "NO MATCH"
+    assert bom["lines"] == []
+    assert bom["total_cost"] == 0
+    assert bom["by_category"] == []
 
 
 def test_unmatched_boq_item_can_be_manually_mapped_to_valid_unit_recipe(review_session) -> None:
@@ -366,6 +369,8 @@ def test_low_confidence_mapping_requires_human_recipe_selection(review_session) 
     assert initial["mapping"][0]["Status"] == "REVIEW"
     assert initial["validation"]["status"] == "blocked"
     assert any("low confidence" in error for error in initial["validation"]["errors"])
+    assert initial["lines"] == []
+    assert initial["total_cost"] == 0
 
     mapped = client.put(
         f"/boqs/{boq_id}/mapping",

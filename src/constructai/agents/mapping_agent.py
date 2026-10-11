@@ -380,4 +380,9 @@ class MappingAgent:
             *validation_warnings,
         ]
 
+        if validation_errors:
+            out.lines.clear()
+            out.total_cost = 0.0
+            out.by_category.clear()
+
         return out

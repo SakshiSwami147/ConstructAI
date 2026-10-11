@@ -458,6 +458,8 @@ function ApprovalScreen({ boq, loading, onBack, onGenerateBOM }: { boq: BOQ; loa
 function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError }: { boq: BOQ; bom: BOMResult; loading: boolean; onBack: () => void; onReviewBOQ: () => void; onMapItem: (itemNumber: number, workKey: string) => void; onError: (error: string) => void }) {
   const formatINR = (amount: number) => `₹${amount.toLocaleString("en-IN")}`;
   const [recipeOptions, setRecipeOptions] = useState<Record<number, MappingRecipe[]>>({});
+  const unmatchedCount = bom.mapping.filter((item) => item.Status === "NO MATCH").length;
+  const reviewCount = bom.mapping.filter((item) => item.Status === "REVIEW").length;
 
   useEffect(() => {
     let active = true;
@@ -487,7 +489,7 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError 
         <div><span>Estimated material cost</span><strong>{formatINR(bom.total_cost)}</strong></div>
       </div>
       <div className="section-intro compact"><span className="section-index">05</span><div><h2>Bill of materials</h2><p>Suggested material requirements are calculated from the approved BOQ using the current recipe catalog. Review every match before procurement.</p></div></div>
-      {bom.validation.errors.length > 0 && <div className="issues" role="alert"><strong>BOM validation failed — resolve each mapping or measurement issue before continuing</strong>{bom.validation.errors.map((error) => <span className="error" key={error}>{error}</span>)}<span className="warning">Low-confidence matches and missing recipe dimensions are not accepted automatically. Select a recipe only when it describes the verified construction; the app will not guess from a location such as “south elevation”.</span></div>}
+      {bom.validation.errors.length > 0 && <div className="issues" role="alert"><strong>BOM needs your review — {unmatchedCount} need a recipe; {reviewCount} need confirmation; {bom.validation.errors.length - unmatchedCount - reviewCount} need measurement details.</strong><span className="warning">No material total is provided until every blocking issue is resolved. Select a recipe only when it matches the actual construction; material and finish cannot be determined from a room or wall name alone.</span><details className="validation-details"><summary>See all {bom.validation.errors.length} review items</summary>{bom.validation.errors.map((error) => <span className="error" key={error}>{error}</span>)}</details></div>}
       {bom.validation.warnings.length > 0 && <div className="issues"><strong>Mapping warnings — review before procurement</strong>{bom.validation.warnings.map((warning) => <span className="warning" key={warning}>{warning}</span>)}</div>}
       <h3>BOQ mapping</h3>
       <div className="table-wrap"><table><thead><tr><th>BOQ item</th><th>Description</th><th>Matched work item</th><th>Confidence</th><th>Status</th><th>Manual recipe selection</th></tr></thead><tbody>
@@ -499,10 +501,10 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError 
         })}
       </tbody></table></div>
       <h3>Material requirements</h3>
-      {bom.lines.length > 0 ? <div className="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Net qty</th><th>Wastage</th><th>Order qty</th><th>Unit</th><th>Rate</th><th>Estimated cost</th><th>BOQ items</th></tr></thead><tbody>
+      {bom.lines.length > 0 && bom.validation.status === "ready" ? <div className="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Net qty</th><th>Wastage</th><th>Order qty</th><th>Unit</th><th>Rate</th><th>Estimated cost</th><th>BOQ items</th></tr></thead><tbody>
         {bom.lines.map((line) => <tr key={line.Material}><td>{line.Material}</td><td>{line.Category}</td><td>{line["Net qty"]}</td><td>{line["Wastage %"]}%</td><td>{line["Order qty"]}</td><td>{line.Unit}</td><td>{formatINR(line["Rate (Rs)"])}</td><td>{formatINR(line["Cost (Rs)"])}</td><td>{line["Used in BOQ items"]}</td></tr>)}
-      </tbody></table></div> : <div className="issues"><strong>No materials were mapped.</strong><span>Check the BOQ mapping warnings and add a matching recipe to the project catalog.</span></div>}
-      {bom.by_category.length > 0 && <><h3>Estimated cost by category</h3><div className="table-wrap"><table><thead><tr><th>Category</th><th>Estimated cost</th></tr></thead><tbody>{bom.by_category.map((category) => <tr key={category.Category}><td>{category.Category}</td><td>{formatINR(category["Cost (Rs)"])}</td></tr>)}</tbody></table></div></>}
+      </tbody></table></div> : bom.validation.status === "blocked" ? <div className="issues"><strong>Material quantities and costs are withheld.</strong><span>Resolve the mapping and measurement review items above, then regenerate the BOM to calculate a complete estimate.</span></div> : <div className="issues"><strong>No materials were mapped.</strong><span>Check the BOQ mapping warnings and add a matching recipe to the project catalog.</span></div>}
+      {bom.validation.status === "ready" && bom.by_category.length > 0 && <><h3>Estimated cost by category</h3><div className="table-wrap"><table><thead><tr><th>Category</th><th>Estimated cost</th></tr></thead><tbody>{bom.by_category.map((category) => <tr key={category.Category}><td>{category.Category}</td><td>{formatINR(category["Cost (Rs)"])}</td></tr>)}</tbody></table></div></>}
       <div className="action-row"><span className="muted">Material rates are prototype catalog estimates, not confirmed company rates.</span><div><button className="secondary-button" type="button" onClick={onBack}>Back to approved BOQ</button> {bom.validation.errors.length > 0 && <button className="secondary-button" type="button" onClick={onReviewBOQ}>Reopen BOQ to edit</button>}</div></div>
     </div>
   );
