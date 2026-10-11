@@ -1,6 +1,6 @@
 # ConstructAI_MLCV
 
-Milestone 1 foundation for the Drawing/PDF to approved BOQ workflow.
+Milestone 1 foundation for the drawing-to-BOQ and material workflow.
 
 ## Backend
 
@@ -58,6 +58,8 @@ Each extraction response includes an `extraction_id`. Correct detections with `P
 
 Generate a BOQ with `POST /extractions/{extraction_id}/boq`. BOQ edits use `PATCH /boqs/{boq_id}/items/{item_number}`; transition through `POST /boqs/{boq_id}/submit` and `POST /boqs/{boq_id}/approve` for final approval. Review sessions are held in process memory for this prototype and are lost when the backend restarts.
 
+After BOQ approval, the frontend can generate a materials BOM. Unmatched BOQ lines block downstream estimates. On the BOM screen, reviewers can explicitly select a recipe with the same BOQ unit; manual selections are identified in the mapping results and require human confirmation. The application does not infer construction material from location-only descriptions. `data/recipes.csv` includes clearly labelled sample assumptions for the provided residential plan: vitrified room flooring, external masonry thickness, and internal partition thickness. These are demo assumptions, not drawing specifications; the 3 m wall height must be entered and verified by the reviewer.
+
 ## Frontend
 
 ```powershell
@@ -78,7 +80,7 @@ pytest
 - `app/frontend`: React/Vite frontend entry point for the milestone workflow.
 - `src/constructai/extraction`: extraction contracts, text providers, and reusable vision pipeline.
 - `src/constructai/boq`: validated BOQ data contracts and quantity logic.
-- `src/constructai/agents`: mapping and material-selection logic.
+- `src/constructai/agents`: BOQ-to-material mapping.
 - `tests`: focused backend and vision tests.
 
 ## Human-in-the-loop workflow

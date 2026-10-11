@@ -36,6 +36,7 @@ class BOMResult:
     lines: list = field(default_factory=list)
     mapping: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    validation: dict = field(default_factory=dict)
     total_cost: float = 0.0
     by_category: list = field(default_factory=list)
 
@@ -166,9 +167,24 @@ class MappingAgent:
 
         return best[1], best[0]
 
-    def run(self, boq: BOQ) -> BOMResult:
+    def recipe_options(self, unit: str) -> list[dict[str, str]]:
+        return [
+            {"work_key": key, "description": work["text"], "unit": work["unit"]}
+            for key, work in self.works.items()
+            if work["unit"] == unit
+        ]
+
+    def run(
+        self,
+        boq: BOQ,
+        manual_mappings: dict[int, str] | None = None,
+    ) -> BOMResult:
 
         out, acc = BOMResult(), {}
+        validation_errors = []
+        validation_warnings = []
+        calculation_warnings = []
+        manual_mappings = manual_mappings or {}
 
         for it in boq.items:
 
@@ -178,8 +194,20 @@ class MappingAgent:
             item_number = it.item_number
 
             key, score = self.match(description, unit)
+            manually_mapped = item_number in manual_mappings
+            if manually_mapped:
+                selected_key = manual_mappings[item_number]
+                selected_work = self.works.get(selected_key)
+                if selected_work is None or selected_work["unit"] != unit:
+                    validation_errors.append(
+                        f"BOQ {item_number}: selected recipe is invalid for unit '{unit}'."
+                    )
+                    key, score = None, 0.0
+                    manually_mapped = False
+                else:
+                    key, score = selected_key, 1.0
 
-            status = (
+            status = "MANUAL" if manually_mapped else (
                 "OK"
                 if score >= OK_SCORE
                 else "REVIEW"
@@ -192,7 +220,9 @@ class MappingAgent:
                     "BOQ item": str(item_number),
                     "Description": description,
                     "Matched work item": (
-                        self.works[key]["text"]
+                        f"{self.works[key]['text']} (manual selection)"
+                        if key and status == "MANUAL"
+                        else self.works[key]["text"]
                         if key and status != "NO MATCH"
                         else "-"
                     ),
@@ -203,9 +233,10 @@ class MappingAgent:
 
             if status == "NO MATCH":
 
-                out.warnings.append(
+                validation_errors.append(
                     f"BOQ {item_number} '{description}': "
-                    "no catalog match - add a recipe in data/recipes.csv."
+                    "no work-item recipe match. Correct the BOQ description/unit "
+                    "or select a verified recipe in the BOM mapping table."
                 )
 
                 continue
@@ -228,9 +259,9 @@ class MappingAgent:
                 )
 
                 if not match:
-                    out.warnings.append(
-                        f"BOQ {item_number}: no thickness in text, "
-                        f"assumed {mm:g} mm."
+                    calculation_warnings.append(
+                        f"BOQ {item_number}: no wall thickness in the description; "
+                        f"the matched recipe assumes {mm:g} mm."
                     )
 
                 mult = mm / 1000
@@ -259,11 +290,17 @@ class MappingAgent:
 
             if status == "REVIEW":
 
-                out.warnings.append(
+                validation_warnings.append(
                     f"BOQ {item_number} matched "
                     f"'{work['text']}' "
                     f"with low confidence ({score:.2f}) - "
                     "please check."
+                )
+
+            if status == "MANUAL":
+                validation_warnings.append(
+                    f"BOQ {item_number} was manually mapped to '{work['text']}'; "
+                    "confirm the recipe matches the actual construction."
                 )
 
         categories = {}
@@ -327,6 +364,17 @@ class MappingAgent:
                 categories.items(),
                 key=lambda kv: -kv[1],
             )
+        ]
+
+        out.validation = {
+            "status": "blocked" if validation_errors else "ready",
+            "errors": validation_errors,
+            "warnings": [*validation_warnings, *calculation_warnings],
+        }
+        out.warnings = [
+            *validation_errors,
+            *validation_warnings,
+            *calculation_warnings,
         ]
 
         return out

@@ -1,6 +1,6 @@
-import { ChangeEvent, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 
-type Screen = "upload" | "extraction" | "boq" | "approval";
+type Screen = "upload" | "extraction" | "boq" | "approval" | "bom";
 type BOQStatus = "DRAFT" | "REVIEW" | "APPROVED";
 type ElementReviewStatus = "pending" | "approved" | "rejected";
 
@@ -54,13 +54,49 @@ type BOQ = {
   extraction_id: string;
 };
 
+type BOMResult = {
+  lines: {
+    Material: string;
+    Category: string;
+    Unit: string;
+    "Net qty": number;
+    "Wastage %": number;
+    "Order qty": number;
+    "Rate (Rs)": number;
+    "Cost (Rs)": number;
+    "Used in BOQ items": string;
+  }[];
+  mapping: {
+    "BOQ item": string;
+    Description: string;
+    "Matched work item": string;
+    Confidence: number;
+    Status: "OK" | "REVIEW" | "NO MATCH" | "MANUAL";
+  }[];
+  warnings: string[];
+  validation: {
+    status: "ready" | "blocked";
+    errors: string[];
+    warnings: string[];
+  };
+  total_cost: number;
+  by_category: { Category: string; "Cost (Rs)": number }[];
+};
+
+type MappingRecipe = {
+  work_key: string;
+  description: string;
+  unit: string;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
-const unitOptions = ["m", "lm", "m2", "m3", "pcs", "unit", "kg", "ton", "l", "litre"];
+const unitOptions = ["m", "lm", "m2", "m3", "pcs", "nos", "unit", "kg", "ton", "l", "litre"];
 const steps: { id: Screen; label: string; number: string }[] = [
   { id: "upload", label: "Upload drawing", number: "01" },
   { id: "extraction", label: "Extraction results", number: "02" },
   { id: "boq", label: "BOQ review", number: "03" },
   { id: "approval", label: "Approval", number: "04" },
+  { id: "bom", label: "BOM & mapping", number: "05" },
 ];
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -78,13 +114,15 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
   const [boq, setBOQ] = useState<BOQ | null>(null);
-  const [loading, setLoading] = useState<"extract" | "boq" | "review" | null>(null);
+  const [bom, setBOM] = useState<BOMResult | null>(null);
+  const [loading, setLoading] = useState<"extract" | "boq" | "review" | "bom" | null>(null);
   const [error, setError] = useState("");
 
   const extract = async (selectedFile: File) => {
     setFile(selectedFile);
     setError("");
     setBOQ(null);
+    setBOM(null);
     setLoading("extract");
     const form = new FormData();
     form.append("file", selectedFile);
@@ -134,6 +172,7 @@ function App() {
       next[index] = item;
       return { ...current, elements: next };
     });
+    setBOM(null);
     setBOQ(null);
   };
 
@@ -245,8 +284,42 @@ function App() {
     }
   };
 
+  const generateBOM = async () => {
+    if (!boq) return;
+    setError("");
+    setLoading("bom");
+    try {
+      const result = await request<BOMResult>(`/boqs/${boq.boq_id}/bom`, { method: "POST" });
+      setBOM(result);
+      setScreen("bom");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "BOM generation failed");
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const mapBOQItem = async (itemNumber: number, workKey: string) => {
+    if (!boq || !workKey) return;
+    setError("");
+    setLoading("bom");
+    try {
+      await request(`/boqs/${boq.boq_id}/mapping`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_number: itemNumber, work_key: workKey }),
+      });
+      const result = await request<BOMResult>(`/boqs/${boq.boq_id}/bom`, { method: "POST" });
+      setBOM(result);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Manual BOQ mapping failed");
+    } finally {
+      setLoading(null);
+    }
+  };
+
   const activeStep = steps.findIndex((step) => step.id === screen);
-  const canNavigate = (step: Screen) => step === "upload" || (step === "extraction" && !!extraction) || (step === "boq" && !!boq) || (step === "approval" && boq?.status === "APPROVED");
+  const canNavigate = (step: Screen) => step === "upload" || (step === "extraction" && !!extraction) || (step === "boq" && !!boq) || (step === "approval" && boq?.status === "APPROVED") || (step === "bom" && !!bom);
 
   return (
     <main className="app-shell">
@@ -260,7 +333,7 @@ function App() {
 
       <div className="layout">
         <aside className="sidebar">
-          <div className="sidebar-heading"><span>ESTIMATOR WORKSPACE</span><strong>Drawing to BOQ</strong></div>
+          <div className="sidebar-heading"><span>ESTIMATOR WORKSPACE</span><strong>Drawing to BOM</strong></div>
           <nav aria-label="Workflow steps">
             {steps.map((step, index) => (
               <button key={step.id} type="button" className={`nav-step ${screen === step.id ? "active" : ""} ${index < activeStep ? "complete" : ""}`} onClick={() => canNavigate(step.id) && setScreen(step.id)} disabled={!canNavigate(step.id)}>
@@ -273,7 +346,7 @@ function App() {
 
         <section className="content">
           <div className="content-header">
-            <div><p className="eyebrow">Technical intelligence / {steps[activeStep].number}</p><h1>{screen === "upload" ? "Start with the source drawing." : screen === "extraction" ? "Review extracted elements." : screen === "boq" ? "Shape the draft BOQ." : "BOQ is ready for approval."}</h1></div>
+            <div><p className="eyebrow">Technical intelligence / {steps[activeStep].number}</p><h1>{screen === "upload" ? "Start with the source drawing." : screen === "extraction" ? "Review extracted elements." : screen === "boq" ? "Shape the draft BOQ." : screen === "approval" ? "BOQ is ready for approval." : "Map quantities to materials."}</h1></div>
             {boq && <span className={`status-badge ${boq.status.toLowerCase()}`}><span /> {boq.status}</span>}
           </div>
 
@@ -282,7 +355,8 @@ function App() {
           {screen === "upload" && <UploadScreen inputRef={inputRef} file={file} loading={loading === "extract"} onFileChange={onFileChange} />}
           {screen === "extraction" && extraction && <HumanReviewExtractionScreen extraction={extraction} loading={loading === "boq" || loading === "review"} onEdit={updateExtractionElement} onReview={reviewElement} onGenerate={generateBOQ} />}
           {screen === "boq" && boq && <PersistentBOQScreen boq={boq} onEdit={updateItem} onSave={saveBOQItem} onSubmit={submitForReview} onApprove={approve} />}
-          {screen === "approval" && boq && <ApprovalScreen boq={boq} onBack={() => setScreen("boq")} />}
+          {screen === "approval" && boq && <ApprovalScreen boq={boq} loading={loading === "bom"} onBack={() => setScreen("boq")} onGenerateBOM={generateBOM} />}
+          {screen === "bom" && boq && bom && <BOMScreen boq={boq} bom={bom} loading={loading === "bom"} onBack={() => setScreen("approval")} onReviewBOQ={() => setScreen("extraction")} onMapItem={mapBOQItem} onError={setError} />}
         </section>
       </div>
     </main>
@@ -307,10 +381,11 @@ function HumanReviewExtractionScreen({ extraction, loading, onEdit, onReview, on
       </div>
       <div className="section-intro compact"><span className="section-index">02</span><div><h2>Detected construction elements</h2><p>Enter measurements and units from the drawing where missing. BOQ quantities are calculated from the verified dimensions when possible, with the formula shown for review.</p></div></div>
       {extraction.elements.length === 0 && <div className="issues"><strong>No elements were returned.</strong><span>The uploaded drawing did not produce usable extraction results. Check the file and try again.</span></div>}
-      <div className="table-wrap"><table><thead><tr><th>#</th><th>Type</th><th>Location</th><th>Length</th><th>Width</th><th>Height</th><th>Qty</th><th>Unit</th><th>Page</th><th>Review</th></tr></thead>
+      <div className="table-wrap"><table><thead><tr><th>#</th><th>Type</th><th>Description</th><th>Location</th><th>Length</th><th>Width</th><th>Height</th><th>Qty</th><th>Unit</th><th>Page</th><th>Review</th></tr></thead>
         <tbody>{extraction.elements.map((element, index) => <tr key={`${element.element_id ?? element.description}-${index}`}>
           <td className="number-cell">{index + 1}</td>
           <td><input value={element.element_type} onChange={(event) => onEdit(index, "element_type", event.target.value)} aria-label={`Element type ${index + 1}`} /></td>
+          <td><input value={element.description} onChange={(event) => onEdit(index, "description", event.target.value)} aria-label={`Description ${index + 1}`} /></td>
           <td><input value={element.location ?? ""} onChange={(event) => onEdit(index, "location", event.target.value)} aria-label={`Location ${index + 1}`} /></td>
           <td><input className="dimension-input" placeholder="Not detected" value={element.dimensions?.length ?? ""} onChange={(event) => onEdit(index, "dimensions.length", event.target.value)} aria-label={`Length ${index + 1}`} /></td>
           <td><input className="dimension-input" placeholder="Not detected" value={element.dimensions?.width ?? ""} onChange={(event) => onEdit(index, "dimensions.width", event.target.value)} aria-label={`Width ${index + 1}`} /></td>
@@ -361,8 +436,60 @@ function BOQScreen({ boq, onEdit, onSubmit, onApprove }: { boq: BOQ; onEdit: (it
   return <div className="screen"><div className="data-strip"><div><span>BOQ source</span><strong>{boq.source_name}</strong></div><div><span>Line items</span><strong>{boq.items.length}</strong></div><div><span>Validation</span><strong className={errors.length ? "warning-text" : "good-text"}>{errors.length ? `${errors.length} error${errors.length > 1 ? "s" : ""}` : "Ready"}</strong></div></div><div className="section-intro compact"><span className="section-index">03</span><div><h2>Bill of quantities</h2><p>Edit description, quantity, or unit while the BOQ is still a draft.</p></div></div>{boq.validation_issues.length > 0 && <div className="issues"><strong>Validation notes</strong>{boq.validation_issues.map((issue) => <span className={issue.severity} key={`${issue.field}-${issue.message}`}>{issue.severity === "error" ? "!" : "i"} {issue.message}</span>)}</div>}<div className="table-wrap"><table><thead><tr><th>#</th><th>Description</th><th>Element</th><th>Quantity</th><th>Unit</th><th>Calculation</th><th>Source</th><th>Confidence</th></tr></thead><tbody>{boq.items.map((item) => <tr key={item.item_number}><td className="number-cell">{String(item.item_number).padStart(2, "0")}</td><td><input value={item.description} onChange={(event) => onEdit(item.item_number, "description", event.target.value)} aria-label={`Description for item ${item.item_number}`} /></td><td><span className="type-tag">{item.element_type}</span><small>{item.element_id ?? "—"}</small></td><td><input className="quantity-input" type="number" min="0" value={item.quantity} onChange={(event) => onEdit(item.item_number, "quantity", event.target.value)} aria-label={`Quantity for item ${item.item_number}`} /></td><td><input className="unit-input" value={item.unit} onChange={(event) => onEdit(item.item_number, "unit", event.target.value)} aria-label={`Unit for item ${item.item_number}`} /></td><td className="calculation">{item.calculation}</td><td><span className="source-page">p. {item.source_page ?? "—"}</span></td><td><span className="confidence-value">{Math.round(item.confidence * 100)}%</span></td></tr>)}</tbody></table></div><div className="action-row"><span className="muted">Edits remain local until the approval workflow is connected to persistence.</span>{boq.status === "DRAFT" ? <button className="primary-button" type="button" onClick={onSubmit} disabled={errors.length > 0}>Submit for review  →</button> : <button className="primary-button" type="button" onClick={onApprove}>Approve BOQ  →</button>}</div></div>;
 }
 
-function ApprovalScreen({ boq, onBack }: { boq: BOQ; onBack: () => void }) {
-  return <div className="screen approval-screen"><div className="approval-mark">✓</div><p className="eyebrow">Final status</p><h2>Approved BOQ</h2><p className="approval-copy">The reviewed quantities for <strong>{boq.source_name}</strong> are ready to move into the next project layer.</p><div className="approval-summary"><div><span>Status</span><strong className="approved-label">APPROVED</strong></div><div><span>Approved lines</span><strong>{boq.items.length}</strong></div><div><span>Traceability</span><strong>Complete</strong></div></div><button className="secondary-button" type="button" onClick={onBack}>View approved BOQ</button></div>;
+function ApprovalScreen({ boq, loading, onBack, onGenerateBOM }: { boq: BOQ; loading: boolean; onBack: () => void; onGenerateBOM: () => void }) {
+  return <div className="screen approval-screen"><div className="approval-mark">✓</div><p className="eyebrow">Final status</p><h2>Approved BOQ</h2><p className="approval-copy">The reviewed quantities for <strong>{boq.source_name}</strong> are ready to move into material mapping.</p><div className="approval-summary"><div><span>Status</span><strong className="approved-label">APPROVED</strong></div><div><span>Approved lines</span><strong>{boq.items.length}</strong></div><div><span>Traceability</span><strong>Complete</strong></div></div><div className="action-row"><button className="secondary-button" type="button" onClick={onBack}>View approved BOQ</button><button className="primary-button" type="button" onClick={onGenerateBOM} disabled={loading}>{loading ? "Mapping materials..." : "Generate BOM →"}</button></div></div>;
+}
+
+function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError }: { boq: BOQ; bom: BOMResult; loading: boolean; onBack: () => void; onReviewBOQ: () => void; onMapItem: (itemNumber: number, workKey: string) => void; onError: (error: string) => void }) {
+  const formatINR = (amount: number) => `₹${amount.toLocaleString("en-IN")}`;
+  const [recipeOptions, setRecipeOptions] = useState<Record<number, MappingRecipe[]>>({});
+
+  useEffect(() => {
+    let active = true;
+    const unmatched = bom.mapping.filter((item) => item.Status === "NO MATCH");
+    void Promise.all(unmatched.map(async (item) => {
+      const itemNumber = Number(item["BOQ item"]);
+      try {
+        const result = await request<{ recipes: MappingRecipe[] }>(`/boqs/${boq.boq_id}/mapping-options/${itemNumber}`);
+        if (active) {
+          setRecipeOptions((current) => ({ ...current, [itemNumber]: result.recipes }));
+        }
+      } catch (requestError) {
+        if (active) onError(requestError instanceof Error ? requestError.message : "Could not load recipe options");
+      }
+    }));
+    return () => { active = false; };
+  }, [bom.mapping, boq.boq_id, onError]);
+
+  const unitForItem = (itemNumber: string) =>
+    boq.items.find((boqItem) => boqItem.item_number === Number(itemNumber))?.unit ?? "";
+
+  return (
+    <div className="screen">
+      <div className="data-strip">
+        <div><span>BOQ source</span><strong>{boq.source_name}</strong></div>
+        <div><span>Materials</span><strong>{bom.lines.length}</strong></div>
+        <div><span>Estimated material cost</span><strong>{formatINR(bom.total_cost)}</strong></div>
+      </div>
+      <div className="section-intro compact"><span className="section-index">05</span><div><h2>Bill of materials</h2><p>Suggested material requirements are calculated from the approved BOQ using the current recipe catalog. Review every match before procurement.</p></div></div>
+      {bom.validation.errors.length > 0 && <div className="issues" role="alert"><strong>BOM validation failed — map each unmatched BOQ item before continuing</strong>{bom.validation.errors.map((error) => <span className="error" key={error}>{error}</span>)}<span className="warning">For an unmatched item, select a recipe only when it describes the actual construction. The app will not guess material type from a location such as “south elevation”.</span></div>}
+      {bom.validation.warnings.length > 0 && <div className="issues"><strong>Mapping warnings — review before procurement</strong>{bom.validation.warnings.map((warning) => <span className="warning" key={warning}>{warning}</span>)}</div>}
+      <h3>BOQ mapping</h3>
+      <div className="table-wrap"><table><thead><tr><th>BOQ item</th><th>Description</th><th>Matched work item</th><th>Confidence</th><th>Status</th><th>Manual recipe selection</th></tr></thead><tbody>
+        {bom.mapping.map((item) => {
+          const itemNumber = Number(item["BOQ item"]);
+          const unit = unitForItem(item["BOQ item"]);
+          return <tr key={item["BOQ item"]}><td>{item["BOQ item"]}</td><td>{item.Description}</td><td>{item["Matched work item"]}</td><td>{Math.round(item.Confidence * 100)}%</td><td><span className={`type-tag ${item.Status === "OK" || item.Status === "MANUAL" ? "good-text" : "warning-text"}`}>{item.Status}</span></td><td>{item.Status === "NO MATCH" ? <select aria-label={`Select recipe for BOQ item ${itemNumber}`} value="" disabled={loading || !recipeOptions[itemNumber]} onChange={(event) => onMapItem(itemNumber, event.target.value)}><option value="">{recipeOptions[itemNumber] ? "Choose verified recipe" : "Loading recipes..."}</option>{(recipeOptions[itemNumber] ?? []).filter((recipe) => recipe.unit === unit).map((recipe) => <option key={recipe.work_key} value={recipe.work_key}>{recipe.description} ({recipe.unit})</option>)}</select> : item.Status === "MANUAL" ? <span>Human-selected; verify the match.</span> : "—"}</td></tr>;
+        })}
+      </tbody></table></div>
+      <h3>Material requirements</h3>
+      {bom.lines.length > 0 ? <div className="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Net qty</th><th>Wastage</th><th>Order qty</th><th>Unit</th><th>Rate</th><th>Estimated cost</th><th>BOQ items</th></tr></thead><tbody>
+        {bom.lines.map((line) => <tr key={line.Material}><td>{line.Material}</td><td>{line.Category}</td><td>{line["Net qty"]}</td><td>{line["Wastage %"]}%</td><td>{line["Order qty"]}</td><td>{line.Unit}</td><td>{formatINR(line["Rate (Rs)"])}</td><td>{formatINR(line["Cost (Rs)"])}</td><td>{line["Used in BOQ items"]}</td></tr>)}
+      </tbody></table></div> : <div className="issues"><strong>No materials were mapped.</strong><span>Check the BOQ mapping warnings and add a matching recipe to the project catalog.</span></div>}
+      {bom.by_category.length > 0 && <><h3>Estimated cost by category</h3><div className="table-wrap"><table><thead><tr><th>Category</th><th>Estimated cost</th></tr></thead><tbody>{bom.by_category.map((category) => <tr key={category.Category}><td>{category.Category}</td><td>{formatINR(category["Cost (Rs)"])}</td></tr>)}</tbody></table></div></>}
+      <div className="action-row"><span className="muted">Material rates are prototype catalog estimates, not confirmed company rates.</span><div><button className="secondary-button" type="button" onClick={onBack}>Back to approved BOQ</button> {bom.validation.errors.length > 0 && <button className="secondary-button" type="button" onClick={onReviewBOQ}>Edit BOQ details</button>}</div></div>
+    </div>
+  );
 }
 
 export default App;

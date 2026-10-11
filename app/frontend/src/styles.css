@@ -112,13 +112,14 @@ td select:focus { outline: 1px solid #d26a3e; }
 .approval-summary div:last-child { border-right: 0; }
 .approval-summary strong { display: block; margin-top: 7px; font-size: 12px; }
 .approved-label { color: #4d8c64; font: 11px 'DM Mono', monospace; }
+h3 { margin: 28px 0 12px; font-size: 15px; letter-spacing: -.02em; }
 @media (max-width: 760px) {
   .topbar { height: 66px; padding: 0 20px; }
   .topbar-meta span:not(.live-dot) { display: none; }
   .layout { display: block; }
   .sidebar { padding: 15px 14px; border-right: 0; border-bottom: 1px solid #d7ddd5; }
   .sidebar-heading { display: none; }
-  .sidebar nav { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .sidebar nav { display: grid; grid-template-columns: repeat(5, 1fr); }
   .nav-step { justify-content: center; padding: 9px 4px; border-left: 0; border-bottom: 2px solid transparent; font-size: 10px; text-align: center; }
   .nav-step.active { border-bottom-color: #d26a3e; }
   .nav-step span:last-child { display: none; }

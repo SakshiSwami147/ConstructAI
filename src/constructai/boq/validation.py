@@ -2,7 +2,7 @@ from constructai.boq.schemas import BOQ, BOQValidationIssue, ValidationSeverity
 from constructai.extraction.schemas import ElementReviewStatus, ExtractionResult
 
 
-SUPPORTED_UNITS = {"m", "lm", "linear m", "m2", "m²", "sqm", "m3", "m³", "cum", "pcs", "unit", "kg", "ton", "l", "litre"}
+SUPPORTED_UNITS = {"m", "lm", "linear m", "m2", "m²", "sqm", "m3", "m³", "cum", "pcs", "nos", "unit", "kg", "ton", "l", "litre"}
 LOW_CONFIDENCE_THRESHOLD = 0.75
 
 

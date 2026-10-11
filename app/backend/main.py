@@ -46,6 +46,7 @@ extraction_sessions: dict[str, ExtractionResult] = {}
 extraction_revisions: dict[str, int] = {}
 boq_sessions: dict[str, BOQ] = {}
 boq_extraction_revisions: dict[str, int] = {}
+boq_recipe_overrides: dict[str, dict[int, str]] = {}
 
 
 class ExtractedElementEdit(BaseModel):
@@ -61,6 +62,11 @@ class ExtractedElementEdit(BaseModel):
 
 class ElementReviewDecision(BaseModel):
     decision: Literal["approved", "rejected"]
+
+
+class BOQRecipeMapping(BaseModel):
+    item_number: int = Field(ge=1)
+    work_key: str
 
 
 def _get_extraction(extraction_id: str) -> ExtractionResult:
@@ -83,7 +89,11 @@ def _require_approved_extraction(extraction: ExtractionResult) -> None:
         if issue.severity is ValidationSeverity.ERROR
     ]
     if errors:
-        raise HTTPException(status_code=422, detail="Resolve extraction validation errors before generating the BOQ")
+        details = "; ".join(f"{issue.field}: {issue.message}" for issue in errors)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Resolve extraction validation errors before generating the BOQ: {details}",
+        )
 
 
 def _require_current_boq(boq: BOQ) -> ExtractionResult:
@@ -192,10 +202,21 @@ def review_extracted_element(
 
     elements = list(extraction.elements)
     element = elements[element_index]
-    if decision.decision == "approved" and (
-        not element.element_type.strip() or not element.description.strip() or not element.unit
-    ):
-        raise HTTPException(status_code=422, detail="Correct the element type, description, and unit before approval")
+    if decision.decision == "approved":
+        missing_fields = [
+            name
+            for name, value in (
+                ("element_type", element.element_type),
+                ("description", element.description),
+                ("unit", element.unit),
+            )
+            if not value or not value.strip()
+        ]
+        if missing_fields:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Enter a value for: {', '.join(missing_fields)}",
+            )
     next_status = ElementReviewStatus(decision.decision)
     if element.review_status is not next_status:
         elements[element_index] = element.model_copy(update={"review_status": next_status})
@@ -234,6 +255,8 @@ def edit_boq_item(boq_id: str, item_number: int, edit: BOQItemEdit) -> JSONRespo
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     boq_sessions[boq_id] = boq
+    if boq_id in boq_recipe_overrides:
+        boq_recipe_overrides[boq_id].pop(item_number, None)
     return JSONResponse(content=_model_json(boq))
 
 
@@ -263,6 +286,75 @@ def approve_boq(boq_id: str) -> JSONResponse:
         raise HTTPException(status_code=409, detail=str(error)) from error
     boq_sessions[boq_id] = boq
     return JSONResponse(content=jsonable_encoder(boq, custom_encoder={Decimal: float}))
+
+
+@app.post("/boqs/{boq_id}/bom", tags=["mapping"])
+def generate_reviewed_bom(boq_id: str) -> JSONResponse:
+    boq = boq_sessions.get(boq_id)
+    if boq is None:
+        raise HTTPException(status_code=404, detail="BOQ review session was not found")
+    _require_current_boq(boq)
+    if boq.status.value != "APPROVED":
+        raise HTTPException(status_code=409, detail="The BOQ must be approved before generating a BOM")
+
+    try:
+        bom = mapping_agent.run(boq, boq_recipe_overrides.get(boq_id, {}))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return JSONResponse(content=jsonable_encoder(bom))
+
+
+@app.get("/boqs/{boq_id}/mapping-options/{item_number}", tags=["mapping"])
+def get_boq_mapping_options(boq_id: str, item_number: int) -> JSONResponse:
+    boq = boq_sessions.get(boq_id)
+    if boq is None:
+        raise HTTPException(status_code=404, detail="BOQ review session was not found")
+    _require_current_boq(boq)
+    if boq.status.value != "APPROVED":
+        raise HTTPException(status_code=409, detail="The BOQ must be approved before mapping recipes")
+    item = next((item for item in boq.items if item.item_number == item_number), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="BOQ item was not found")
+
+    return JSONResponse(
+        content={
+            "unit": item.unit,
+            "recipes": mapping_agent.recipe_options(item.unit),
+        }
+    )
+
+
+@app.put("/boqs/{boq_id}/mapping", tags=["mapping"])
+def set_boq_recipe_mapping(boq_id: str, mapping: BOQRecipeMapping) -> JSONResponse:
+    boq = boq_sessions.get(boq_id)
+    if boq is None:
+        raise HTTPException(status_code=404, detail="BOQ review session was not found")
+    _require_current_boq(boq)
+    if boq.status.value != "APPROVED":
+        raise HTTPException(status_code=409, detail="The BOQ must be approved before mapping recipes")
+
+    item = next(
+        (item for item in boq.items if item.item_number == mapping.item_number),
+        None,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="BOQ item was not found")
+    work = mapping_agent.works.get(mapping.work_key)
+    if work is None or work["unit"] != item.unit:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Selected recipe is not available for BOQ unit '{item.unit}'",
+        )
+
+    boq_recipe_overrides.setdefault(boq_id, {})[mapping.item_number] = mapping.work_key
+    return JSONResponse(
+        content={
+            "item_number": mapping.item_number,
+            "work_key": mapping.work_key,
+            "matched_work_item": work["text"],
+        }
+    )
 
 
 @app.post("/mapping", tags=["mapping"])

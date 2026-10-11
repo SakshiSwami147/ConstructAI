@@ -32,7 +32,7 @@ def test_extraction_endpoint_accepts_drawing_upload() -> None:
         )
 
     assert response.status_code == 200
-    assert response.json()["elements"][0]["specification"] == "200mm concrete block"
+    assert response.json()["elements"][0]["specification"] == "Illustrative 230mm masonry wall assumption"
 
 
 def test_extraction_endpoint_accepts_floorplan_images() -> None:
