@@ -27,7 +27,7 @@ STOP = {
 
 COUNTABLE = {"bag", "nos", "sheet"}
 
-OK_SCORE = 0.6
+OK_SCORE = 0.75
 REVIEW_SCORE = 0.35
 
 
@@ -87,18 +87,22 @@ class MappingAgent:
             newline="",
             encoding="utf-8",
         ) as f:
-            for row in csv.DictReader(f):
+            reader = csv.DictReader(f)
+            if "requires_thickness" not in (reader.fieldnames or []):
+                raise ValueError("Recipe catalog is missing the requires_thickness column")
+            for row_number, row in enumerate(reader, start=2):
+                thickness_flag = row["requires_thickness"].strip().lower()
+                if thickness_flag not in {"", "true", "false"}:
+                    raise ValueError(
+                        f"Recipe catalog row {row_number} has invalid requires_thickness value"
+                    )
 
                 work = self.works.setdefault(
                     row["work_key"],
                     {
                         "text": row["match_text"],
                         "unit": row["unit"],
-                        "default_mm": (
-                            float(row["default_mm"])
-                            if row["default_mm"]
-                            else None
-                        ),
+                        "requires_thickness": thickness_flag == "true",
                         "rows": [],
                     },
                 )
@@ -183,7 +187,6 @@ class MappingAgent:
         out, acc = BOMResult(), {}
         validation_errors = []
         validation_warnings = []
-        calculation_warnings = []
         manual_mappings = manual_mappings or {}
 
         for it in boq.items:
@@ -242,29 +245,39 @@ class MappingAgent:
                 continue
 
             work = self.works[key]
+            if status == "REVIEW":
+                validation_errors.append(
+                    f"BOQ {item_number} matched '{work['text']}' with low confidence "
+                    f"({score:.2f}); select and confirm the correct recipe before continuing."
+                )
+                continue
 
             mult = 1.0
 
-            if work["default_mm"]:
-
+            if work["requires_thickness"]:
                 match = re.search(
                     r"(\d+(?:\.\d+)?)\s*mm",
                     description,
                 )
 
-                mm = (
-                    float(match.group(1))
-                    if match
-                    else work["default_mm"]
-                )
+                thickness_mm = float(match.group(1)) if match else None
+                if (
+                    thickness_mm is None
+                    and it.dimensions is not None
+                    and it.dimensions.width is not None
+                    and it.dimensions_source in {"human", "ocr"}
+                ):
+                    thickness_mm = float(it.dimensions.width) * 1000
 
-                if not match:
-                    calculation_warnings.append(
-                        f"BOQ {item_number}: no wall thickness in the description; "
-                        f"the matched recipe assumes {mm:g} mm."
+                if thickness_mm is None:
+                    validation_errors.append(
+                        f"BOQ {item_number} '{description}': the selected recipe requires "
+                        "a verified thickness in millimetres. Add the thickness explicitly "
+                        "from the reviewed drawing dimensions or BOQ description before generating the BOM."
                     )
+                    continue
 
-                mult = mm / 1000
+                mult = thickness_mm / 1000
 
             for material_id, per, note in work["rows"]:
 
@@ -287,15 +300,6 @@ class MappingAgent:
                     material["used"].append(
                         str(item_number)
                     )
-
-            if status == "REVIEW":
-
-                validation_warnings.append(
-                    f"BOQ {item_number} matched "
-                    f"'{work['text']}' "
-                    f"with low confidence ({score:.2f}) - "
-                    "please check."
-                )
 
             if status == "MANUAL":
                 validation_warnings.append(
@@ -369,12 +373,11 @@ class MappingAgent:
         out.validation = {
             "status": "blocked" if validation_errors else "ready",
             "errors": validation_errors,
-            "warnings": [*validation_warnings, *calculation_warnings],
+            "warnings": validation_warnings,
         }
         out.warnings = [
             *validation_errors,
             *validation_warnings,
-            *calculation_warnings,
         ]
 
         return out

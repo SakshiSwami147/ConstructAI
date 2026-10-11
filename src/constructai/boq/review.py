@@ -32,6 +32,8 @@ class BOQReviewService:
 
         current = boq.items[item_index]
         updates = edit.model_dump(exclude_unset=True)
+        if "quantity" in updates:
+            updates["provided_quantity"] = None
         updated_item = current.model_copy(update=updates)
         items = list(boq.items)
         items[item_index] = BOQItem.model_validate(updated_item)

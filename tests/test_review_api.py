@@ -155,7 +155,7 @@ def test_bom_requires_approved_boq_and_maps_materials(review_session) -> None:
         extraction_id,
         {
             "element_type": "masonry",
-            "description": "External masonry wall",
+            "description": "External masonry wall 230mm thick",
             "quantity": 10,
             "unit": "m2",
         },
@@ -166,12 +166,17 @@ def test_bom_requires_approved_boq_and_maps_materials(review_session) -> None:
     assert client.post(f"/boqs/{boq_id}/bom").status_code == 409
     assert client.post(f"/boqs/{boq_id}/submit").status_code == 200
     assert client.post(f"/boqs/{boq_id}/approve").status_code == 200
+    mapped = client.put(
+        f"/boqs/{boq_id}/mapping",
+        json={"item_number": 1, "work_key": "masonry"},
+    )
+    assert mapped.status_code == 200
 
     response = client.post(f"/boqs/{boq_id}/bom")
 
     assert response.status_code == 200
     bom = response.json()
-    assert bom["mapping"][0]["Status"] in {"OK", "REVIEW"}
+    assert bom["mapping"][0]["Status"] == "MANUAL"
     assert bom["validation"]["status"] == "ready"
     assert bom["validation"]["errors"] == []
     assert bom["lines"]
@@ -200,7 +205,7 @@ def test_unmatched_boq_item_can_be_manually_mapped_to_valid_unit_recipe(review_s
         client,
         extraction_id,
         {
-            "description": "Exterior wall, south elevation",
+            "description": "Exterior wall, south elevation, verified 230mm thick",
             "quantity": 12,
             "unit": "m2",
         },
@@ -282,7 +287,7 @@ def test_sample_room_flooring_description_maps_with_assumption_notice(review_ses
     }
 
 
-def test_sample_external_wall_description_maps_with_visible_thickness_assumption(review_session) -> None:
+def test_sample_external_wall_without_explicit_thickness_is_blocked(review_session) -> None:
     client, extraction_id = review_session
     approve_element(
         client,
@@ -290,8 +295,8 @@ def test_sample_external_wall_description_maps_with_visible_thickness_assumption
         {
             "element_type": "wall",
             "description": "External masonry wall sample assumption 3 m height",
-            "dimensions": {"length": 10, "width": 0.23, "height": 3},
-            "quantity": None,
+            "dimensions": None,
+            "quantity": 30,
             "unit": "m2",
         },
     )
@@ -304,9 +309,103 @@ def test_sample_external_wall_description_maps_with_visible_thickness_assumption
 
     assert response.status_code == 200
     bom = response.json()
+    assert bom["validation"]["status"] == "blocked"
+    assert not bom["lines"]
+    assert any("verified thickness" in error for error in bom["validation"]["errors"])
+
+
+def test_bom_uses_reviewer_verified_wall_thickness_not_recipe_default(review_session) -> None:
+    client, extraction_id = review_session
+    approve_element(
+        client,
+        extraction_id,
+        {
+            "element_type": "wall",
+            "description": "External masonry wall",
+            "dimensions": {"length": 10, "width": 0.23, "height": 3},
+            "quantity": None,
+            "unit": "m2",
+        },
+    )
+    boq_id = client.post(f"/extractions/{extraction_id}/boq").json()["boq_id"]
+    client.post(f"/boqs/{boq_id}/submit")
+    client.post(f"/boqs/{boq_id}/approve")
+    mapped = client.put(
+        f"/boqs/{boq_id}/mapping",
+        json={"item_number": 1, "work_key": "masonry"},
+    )
+    assert mapped.status_code == 200
+
+    response = client.post(f"/boqs/{boq_id}/bom")
+
+    assert response.status_code == 200
+    bom = response.json()
     assert bom["validation"]["status"] == "ready"
-    assert bom["mapping"][0]["Matched work item"].startswith("sample assumption")
-    assert any("assumes 230 mm" in warning for warning in bom["validation"]["warnings"])
+    assert bom["mapping"][0]["Status"] == "MANUAL"
+    assert bom["lines"]
+
+
+def test_low_confidence_mapping_requires_human_recipe_selection(review_session) -> None:
+    client, extraction_id = review_session
+    approve_element(
+        client,
+        extraction_id,
+        {
+            "element_type": "door",
+            "description": "Kitchen entrance door",
+            "quantity": 1,
+            "unit": "nos",
+        },
+    )
+    boq_id = client.post(f"/extractions/{extraction_id}/boq").json()["boq_id"]
+    client.post(f"/boqs/{boq_id}/submit")
+    client.post(f"/boqs/{boq_id}/approve")
+
+    initial = client.post(f"/boqs/{boq_id}/bom").json()
+
+    assert initial["mapping"][0]["Status"] == "REVIEW"
+    assert initial["validation"]["status"] == "blocked"
+    assert any("low confidence" in error for error in initial["validation"]["errors"])
+
+    mapped = client.put(
+        f"/boqs/{boq_id}/mapping",
+        json={"item_number": 1, "work_key": "door_int"},
+    )
+    assert mapped.status_code == 200
+    confirmed = client.post(f"/boqs/{boq_id}/bom").json()
+
+    assert confirmed["mapping"][0]["Status"] == "MANUAL"
+    assert confirmed["validation"]["status"] == "ready"
+    assert confirmed["lines"]
+
+
+def test_mapping_error_can_reopen_boq_for_measurement_correction(review_session) -> None:
+    client, extraction_id = review_session
+    approve_element(
+        client,
+        extraction_id,
+        {
+            "element_type": "wall",
+            "description": "External masonry wall",
+            "quantity": 30,
+            "unit": "m2",
+        },
+    )
+    boq_id = client.post(f"/extractions/{extraction_id}/boq").json()["boq_id"]
+    client.post(f"/boqs/{boq_id}/submit")
+    client.post(f"/boqs/{boq_id}/approve")
+
+    reopened = client.post(f"/boqs/{boq_id}/reopen")
+
+    assert reopened.status_code == 200
+    assert reopened.json()["status"] == "DRAFT"
+    edited = client.patch(
+        f"/boqs/{boq_id}/items/1",
+        json={"description": "External masonry wall 230mm"},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["status"] == "DRAFT"
+    assert client.post(f"/boqs/{boq_id}/approve").status_code == 409
 
 
 def test_clearing_dimensions_does_not_retain_previous_ocr_values(review_session) -> None:

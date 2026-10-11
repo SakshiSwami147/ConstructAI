@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from constructai.boq.generator import BOQGenerator
 from constructai.boq.review import BOQItemEdit, BOQReviewService
-from constructai.boq.schemas import BOQ, ValidationSeverity
+from constructai.boq.schemas import BOQ, BOQStatus, ValidationSeverity
 from constructai.boq.validation import BOQValidator
 from constructai.extraction.schemas import (
     Dimensions,
@@ -286,6 +286,21 @@ def approve_boq(boq_id: str) -> JSONResponse:
         raise HTTPException(status_code=409, detail=str(error)) from error
     boq_sessions[boq_id] = boq
     return JSONResponse(content=jsonable_encoder(boq, custom_encoder={Decimal: float}))
+
+
+@app.post("/boqs/{boq_id}/reopen", tags=["boq"])
+def reopen_approved_boq(boq_id: str) -> JSONResponse:
+    boq = boq_sessions.get(boq_id)
+    if boq is None:
+        raise HTTPException(status_code=404, detail="BOQ review session was not found")
+    _require_current_boq(boq)
+    if boq.status.value != "APPROVED":
+        raise HTTPException(status_code=409, detail="Only an approved BOQ can be reopened")
+
+    reopened = boq.model_copy(update={"status": BOQStatus.DRAFT})
+    boq_sessions[boq_id] = reopened
+    boq_recipe_overrides.pop(boq_id, None)
+    return JSONResponse(content=jsonable_encoder(reopened, custom_encoder={Decimal: float}))
 
 
 @app.post("/boqs/{boq_id}/bom", tags=["mapping"])

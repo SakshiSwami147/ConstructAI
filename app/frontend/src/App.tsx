@@ -41,6 +41,8 @@ type BOQItem = {
   calculation: string;
   source_page?: number;
   confidence: number;
+  dimensions?: DimensionSet;
+  dimensions_source?: string;
   element_id?: string;
   item_code?: string;
 };
@@ -299,6 +301,19 @@ function App() {
     }
   };
 
+  const reopenBOQ = async () => {
+    if (!boq) return;
+    try {
+      const result = await request<BOQ>(`/boqs/${boq.boq_id}/reopen`, { method: "POST" });
+      setBOQ(result);
+      setBOM(null);
+      setScreen("boq");
+      setError("");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not reopen approved BOQ");
+    }
+  };
+
   const mapBOQItem = async (itemNumber: number, workKey: string) => {
     if (!boq || !workKey) return;
     setError("");
@@ -356,7 +371,7 @@ function App() {
           {screen === "extraction" && extraction && <HumanReviewExtractionScreen extraction={extraction} loading={loading === "boq" || loading === "review"} onEdit={updateExtractionElement} onReview={reviewElement} onGenerate={generateBOQ} />}
           {screen === "boq" && boq && <PersistentBOQScreen boq={boq} onEdit={updateItem} onSave={saveBOQItem} onSubmit={submitForReview} onApprove={approve} />}
           {screen === "approval" && boq && <ApprovalScreen boq={boq} loading={loading === "bom"} onBack={() => setScreen("boq")} onGenerateBOM={generateBOM} />}
-          {screen === "bom" && boq && bom && <BOMScreen boq={boq} bom={bom} loading={loading === "bom"} onBack={() => setScreen("approval")} onReviewBOQ={() => setScreen("extraction")} onMapItem={mapBOQItem} onError={setError} />}
+          {screen === "bom" && boq && bom && <BOMScreen boq={boq} bom={bom} loading={loading === "bom"} onBack={() => setScreen("approval")} onReviewBOQ={reopenBOQ} onMapItem={mapBOQItem} onError={setError} />}
         </section>
       </div>
     </main>
@@ -379,7 +394,7 @@ function HumanReviewExtractionScreen({ extraction, loading, onEdit, onReview, on
         <div><span>Elements found</span><strong>{extraction.elements.length}</strong></div>
         <div><span>Human decisions</span><strong className={allApproved ? "good-text" : "warning-text"}>{approvedCount} approved · {rejectedCount} rejected · {extraction.elements.length - approvedCount - rejectedCount} pending</strong></div>
       </div>
-      <div className="section-intro compact"><span className="section-index">02</span><div><h2>Detected construction elements</h2><p>Enter measurements and units from the drawing where missing. BOQ quantities are calculated from the verified dimensions when possible, with the formula shown for review.</p></div></div>
+      <div className="section-intro compact"><span className="section-index">02</span><div><h2>Detected construction elements</h2><p>Compare the entire extraction against the source drawing: the current OpenCV contour detector is a prototype, not a trained plan model, and cannot guarantee that every room, wall segment, door, or window is detected. Enter and verify measurements and units; the BOQ shows its calculation for review.</p></div></div>
       {extraction.elements.length === 0 && <div className="issues"><strong>No elements were returned.</strong><span>The uploaded drawing did not produce usable extraction results. Check the file and try again.</span></div>}
       <div className="table-wrap"><table><thead><tr><th>#</th><th>Type</th><th>Description</th><th>Location</th><th>Length</th><th>Width</th><th>Height</th><th>Qty</th><th>Unit</th><th>Page</th><th>Review</th></tr></thead>
         <tbody>{extraction.elements.map((element, index) => <tr key={`${element.element_id ?? element.description}-${index}`}>
@@ -397,7 +412,7 @@ function HumanReviewExtractionScreen({ extraction, loading, onEdit, onReview, on
             {unitOptions.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
           </select></td>
           <td><input type="number" min="1" value={element.source_page ?? ""} onChange={(event) => onEdit(index, "source_page", event.target.value)} aria-label={`Source page ${index + 1}`} /></td>
-          <td><strong className={element.review_status === "approved" ? "good-text" : "warning-text"}>{element.review_status}</strong>{element.dimensions_source === "ocr" && <small>OCR dimensions require verification</small>}<div className="row-actions"><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "approved")}>Approve</button><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "rejected")}>Reject</button></div></td>
+          <td><strong className={element.review_status === "approved" ? "good-text" : "warning-text"}>{element.review_status}</strong>{element.dimensions && <small>Measurement source: {element.dimensions_source ?? "not recorded"}{element.dimensions_source === "ocr" ? " — verify against drawing" : ""}</small>}<div className="row-actions"><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "approved")}>Approve</button><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "rejected")}>Reject</button></div></td>
         </tr>)}</tbody>
       </table></div>
       <div className="action-row"><button className="primary-button" type="button" onClick={onGenerate} disabled={loading || !allApproved}>{loading ? "Generating BOQ..." : allApproved ? "Generate BOQ →" : "Approve every element first"}</button></div>
@@ -416,14 +431,14 @@ function PersistentBOQScreen({ boq, onEdit, onSave, onSubmit, onApprove }: { boq
       <div className="data-strip"><div><span>BOQ source</span><strong>{boq.source_name}</strong></div><div><span>Line items</span><strong>{boq.items.length}</strong></div><div><span>Validation</span><strong className={errors.length ? "warning-text" : "good-text"}>{errors.length ? `${errors.length} error${errors.length > 1 ? "s" : ""}` : "Ready"}</strong></div></div>
       <div className="section-intro compact"><span className="section-index">03</span><div><h2>Bill of quantities</h2><p>BOQ edits are saved to the review session and require resubmission.</p></div></div>
       {boq.validation_issues.length > 0 && <div className="issues"><strong>Validation notes</strong>{boq.validation_issues.map((issue) => <span className={issue.severity} key={`${issue.field}-${issue.message}`}>{issue.severity === "error" ? "!" : "i"} {issue.message}</span>)}</div>}
-      <div className="table-wrap"><table><thead><tr><th>#</th><th>Description</th><th>Element</th><th>Quantity</th><th>Unit</th><th>Calculation</th><th>Source</th><th>Score</th></tr></thead><tbody>
+      <div className="table-wrap"><table><thead><tr><th>#</th><th>Description</th><th>Element</th><th>Quantity</th><th>Unit</th><th>Calculation</th><th>Source measurement</th><th>Source</th><th>Score</th></tr></thead><tbody>
         {boq.items.map((item) => <tr key={item.item_number}>
           <td className="number-cell">{String(item.item_number).padStart(2, "0")}</td>
           <td><input value={item.description} onChange={(event) => onEdit(item.item_number, "description", event.target.value)} onBlur={(event) => onSave(item.item_number, "description", event.currentTarget.value)} aria-label={`Description for item ${item.item_number}`} /></td>
           <td><input value={item.element_type} onChange={(event) => onEdit(item.item_number, "element_type", event.target.value)} onBlur={(event) => onSave(item.item_number, "element_type", event.currentTarget.value)} aria-label={`Element type for item ${item.item_number}`} /><small>{item.element_id ?? "—"}</small></td>
           <td><input className="quantity-input" type="number" min="0" value={item.quantity} onChange={(event) => onEdit(item.item_number, "quantity", event.target.value)} onBlur={(event) => onSave(item.item_number, "quantity", event.currentTarget.value)} aria-label={`Quantity for item ${item.item_number}`} /></td>
           <td><input className="unit-input" value={item.unit} onChange={(event) => onEdit(item.item_number, "unit", event.target.value)} onBlur={(event) => onSave(item.item_number, "unit", event.currentTarget.value)} aria-label={`Unit for item ${item.item_number}`} /></td>
-          <td className="calculation">{item.calculation}</td><td><span className="source-page">p. {item.source_page ?? "—"}</span></td><td><span className="confidence-value">{Math.round(item.confidence * 100)}%</span></td>
+          <td className="calculation">{item.calculation}</td><td>{item.dimensions ? `${item.dimensions.length ?? "—"} × ${item.dimensions.width ?? "—"} × ${item.dimensions.height ?? "—"} m` : "No dimensions"}<small>{item.dimensions_source ?? "Source not recorded"}</small></td><td><span className="source-page">p. {item.source_page ?? "—"}</span></td><td><span className="confidence-value">{Math.round(item.confidence * 100)}%</span></td>
         </tr>)}
       </tbody></table></div>
       <div className="action-row">{boq.status === "DRAFT" ? <button className="primary-button" type="button" onClick={onSubmit} disabled={errors.length > 0}>Submit for review →</button> : <button className="primary-button" type="button" onClick={onApprove}>Approve BOQ →</button>}</div>
@@ -446,8 +461,8 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError 
 
   useEffect(() => {
     let active = true;
-    const unmatched = bom.mapping.filter((item) => item.Status === "NO MATCH");
-    void Promise.all(unmatched.map(async (item) => {
+    const needsConfirmation = bom.mapping.filter((item) => item.Status === "NO MATCH" || item.Status === "REVIEW");
+    void Promise.all(needsConfirmation.map(async (item) => {
       const itemNumber = Number(item["BOQ item"]);
       try {
         const result = await request<{ recipes: MappingRecipe[] }>(`/boqs/${boq.boq_id}/mapping-options/${itemNumber}`);
@@ -472,14 +487,15 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError 
         <div><span>Estimated material cost</span><strong>{formatINR(bom.total_cost)}</strong></div>
       </div>
       <div className="section-intro compact"><span className="section-index">05</span><div><h2>Bill of materials</h2><p>Suggested material requirements are calculated from the approved BOQ using the current recipe catalog. Review every match before procurement.</p></div></div>
-      {bom.validation.errors.length > 0 && <div className="issues" role="alert"><strong>BOM validation failed — map each unmatched BOQ item before continuing</strong>{bom.validation.errors.map((error) => <span className="error" key={error}>{error}</span>)}<span className="warning">For an unmatched item, select a recipe only when it describes the actual construction. The app will not guess material type from a location such as “south elevation”.</span></div>}
+      {bom.validation.errors.length > 0 && <div className="issues" role="alert"><strong>BOM validation failed — resolve each mapping or measurement issue before continuing</strong>{bom.validation.errors.map((error) => <span className="error" key={error}>{error}</span>)}<span className="warning">Low-confidence matches and missing recipe dimensions are not accepted automatically. Select a recipe only when it describes the verified construction; the app will not guess from a location such as “south elevation”.</span></div>}
       {bom.validation.warnings.length > 0 && <div className="issues"><strong>Mapping warnings — review before procurement</strong>{bom.validation.warnings.map((warning) => <span className="warning" key={warning}>{warning}</span>)}</div>}
       <h3>BOQ mapping</h3>
       <div className="table-wrap"><table><thead><tr><th>BOQ item</th><th>Description</th><th>Matched work item</th><th>Confidence</th><th>Status</th><th>Manual recipe selection</th></tr></thead><tbody>
         {bom.mapping.map((item) => {
           const itemNumber = Number(item["BOQ item"]);
           const unit = unitForItem(item["BOQ item"]);
-          return <tr key={item["BOQ item"]}><td>{item["BOQ item"]}</td><td>{item.Description}</td><td>{item["Matched work item"]}</td><td>{Math.round(item.Confidence * 100)}%</td><td><span className={`type-tag ${item.Status === "OK" || item.Status === "MANUAL" ? "good-text" : "warning-text"}`}>{item.Status}</span></td><td>{item.Status === "NO MATCH" ? <select aria-label={`Select recipe for BOQ item ${itemNumber}`} value="" disabled={loading || !recipeOptions[itemNumber]} onChange={(event) => onMapItem(itemNumber, event.target.value)}><option value="">{recipeOptions[itemNumber] ? "Choose verified recipe" : "Loading recipes..."}</option>{(recipeOptions[itemNumber] ?? []).filter((recipe) => recipe.unit === unit).map((recipe) => <option key={recipe.work_key} value={recipe.work_key}>{recipe.description} ({recipe.unit})</option>)}</select> : item.Status === "MANUAL" ? <span>Human-selected; verify the match.</span> : "—"}</td></tr>;
+          const needsConfirmation = item.Status === "NO MATCH" || item.Status === "REVIEW";
+          return <tr key={item["BOQ item"]}><td>{item["BOQ item"]}</td><td>{item.Description}</td><td>{item["Matched work item"]}</td><td>{Math.round(item.Confidence * 100)}%</td><td><span className={`type-tag ${item.Status === "OK" || item.Status === "MANUAL" ? "good-text" : "warning-text"}`}>{item.Status}</span></td><td>{needsConfirmation ? <select aria-label={`Select and confirm recipe for BOQ item ${itemNumber}`} value="" disabled={loading || !recipeOptions[itemNumber]} onChange={(event) => onMapItem(itemNumber, event.target.value)}><option value="">{recipeOptions[itemNumber] ? "Select verified recipe" : "Loading recipes..."}</option>{(recipeOptions[itemNumber] ?? []).filter((recipe) => recipe.unit === unit).map((recipe) => <option key={recipe.work_key} value={recipe.work_key}>{recipe.description} ({recipe.unit})</option>)}</select> : item.Status === "MANUAL" ? <span>Human-selected; verify the match.</span> : "—"}</td></tr>;
         })}
       </tbody></table></div>
       <h3>Material requirements</h3>
@@ -487,7 +503,7 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError 
         {bom.lines.map((line) => <tr key={line.Material}><td>{line.Material}</td><td>{line.Category}</td><td>{line["Net qty"]}</td><td>{line["Wastage %"]}%</td><td>{line["Order qty"]}</td><td>{line.Unit}</td><td>{formatINR(line["Rate (Rs)"])}</td><td>{formatINR(line["Cost (Rs)"])}</td><td>{line["Used in BOQ items"]}</td></tr>)}
       </tbody></table></div> : <div className="issues"><strong>No materials were mapped.</strong><span>Check the BOQ mapping warnings and add a matching recipe to the project catalog.</span></div>}
       {bom.by_category.length > 0 && <><h3>Estimated cost by category</h3><div className="table-wrap"><table><thead><tr><th>Category</th><th>Estimated cost</th></tr></thead><tbody>{bom.by_category.map((category) => <tr key={category.Category}><td>{category.Category}</td><td>{formatINR(category["Cost (Rs)"])}</td></tr>)}</tbody></table></div></>}
-      <div className="action-row"><span className="muted">Material rates are prototype catalog estimates, not confirmed company rates.</span><div><button className="secondary-button" type="button" onClick={onBack}>Back to approved BOQ</button> {bom.validation.errors.length > 0 && <button className="secondary-button" type="button" onClick={onReviewBOQ}>Edit BOQ details</button>}</div></div>
+      <div className="action-row"><span className="muted">Material rates are prototype catalog estimates, not confirmed company rates.</span><div><button className="secondary-button" type="button" onClick={onBack}>Back to approved BOQ</button> {bom.validation.errors.length > 0 && <button className="secondary-button" type="button" onClick={onReviewBOQ}>Reopen BOQ to edit</button>}</div></div>
     </div>
   );
 }

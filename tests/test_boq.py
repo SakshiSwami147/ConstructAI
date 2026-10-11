@@ -73,6 +73,56 @@ def test_boq_generator_preserves_element_reference_and_source_page() -> None:
     assert boq.items[0].quantity == Decimal("13.5")
 
 
+def test_boq_generator_preserves_dimension_source_and_warns_on_quantity_conflict() -> None:
+    extraction = ExtractionResult(
+        source_name="drawing.pdf",
+        elements=[
+            ExtractedElement(
+                element_type="room",
+                element_id="R-001",
+                description="Living room",
+                dimensions=Dimensions(length=Decimal("5"), width=Decimal("3.3")),
+                dimensions_source="human",
+                quantity=Decimal("17"),
+                unit="m2",
+                source_page=1,
+                confidence=0.95,
+            )
+        ],
+    )
+
+    boq = BOQGenerator().generate(extraction)
+
+    assert boq.items[0].quantity == Decimal("16.5")
+    assert boq.items[0].dimensions_source == "human"
+    assert boq.items[0].dimensions is not None
+    assert any("differs from the dimension-based quantity 16.5" in issue.message for issue in boq.validation_issues)
+
+
+def test_boq_generator_keeps_repeated_window_instances_separate() -> None:
+    extraction = ExtractionResult(
+        source_name="drawing.pdf",
+        elements=[
+            ExtractedElement(
+                element_type="window",
+                element_id=f"W-{index:03d}",
+                description=f"Window W{index}",
+                quantity=Decimal("1"),
+                unit="nos",
+                source_page=1,
+                confidence=0.95,
+            )
+            for index in range(1, 4)
+        ],
+    )
+
+    boq = BOQGenerator().generate(extraction)
+
+    assert len(boq.items) == 3
+    assert [item.quantity for item in boq.items] == [Decimal(1)] * 3
+    assert [item.element_id for item in boq.items] == ["W-001", "W-002", "W-003"]
+
+
 def test_boq_schema_rejects_negative_quantity() -> None:
     with pytest.raises(ValidationError):
         BOQItem(

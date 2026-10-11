@@ -1,9 +1,17 @@
+from decimal import Decimal
+
 from constructai.boq.schemas import BOQ, BOQValidationIssue, ValidationSeverity
-from constructai.extraction.schemas import ElementReviewStatus, ExtractionResult
+from constructai.boq.calculator import QuantityCalculationError, QuantityCalculator
+from constructai.extraction.schemas import (
+    ElementReviewStatus,
+    ExtractedElement,
+    ExtractionResult,
+)
 
 
 SUPPORTED_UNITS = {"m", "lm", "linear m", "m2", "m²", "sqm", "m3", "m³", "cum", "pcs", "nos", "unit", "kg", "ton", "l", "litre"}
 LOW_CONFIDENCE_THRESHOLD = 0.75
+QUANTITY_TOLERANCE = Decimal("0.01")
 
 
 class BOQValidator:
@@ -56,6 +64,34 @@ class BOQValidator:
                         message=f"Low extraction confidence: {item.confidence:.2f}",
                     )
                 )
+            if item.dimensions is not None:
+                dimension_only = ExtractedElement(
+                    element_type=item.element_type,
+                    description=item.description,
+                    dimensions=item.dimensions,
+                    unit=item.unit,
+                    confidence=item.confidence,
+                )
+                try:
+                    calculated_quantity, _ = QuantityCalculator().calculate(dimension_only)
+                except QuantityCalculationError:
+                    continue
+                comparison_quantity = (
+                    item.provided_quantity
+                    if item.provided_quantity is not None
+                    else item.quantity
+                )
+                if abs(comparison_quantity - calculated_quantity) > QUANTITY_TOLERANCE:
+                    issues.append(
+                        BOQValidationIssue(
+                            severity=ValidationSeverity.WARNING,
+                            field=f"{prefix}.quantity",
+                            message=(
+                                f"Entered quantity {comparison_quantity} differs from the "
+                                f"dimension-based quantity {calculated_quantity}; review the drawing."
+                            ),
+                        )
+                    )
         return issues
 
     @staticmethod
