@@ -8,7 +8,7 @@ The loader is strict: a malformed row or an unknown work key stops start-up with
 |---|---|---|
 | `recipes.csv` | Material consumption per unit of work | work_key, match_text, unit, requires_thickness, material_id, qty_per_unit, note |
 | `material_catalog.csv` | Materials, purchase units, rates, wastage | material_id, name, category, unit, rate_inr, wastage_pct |
-| `mapping_config.json` | Match thresholds, stop-words, thickness keywords, trusted dimension sources | — |
+| `mapping_config.json` | Match thresholds, stop-words, thickness keywords, trusted dimension sources, which element types may lend their width as a thickness (`width_as_thickness_element_types`, default `wall` — a room's width is never a thickness) | — |
 | `units.csv` | Which purchase units are counted in whole numbers (rounded up) | unit, countable |
 | `work_rules.csv` | For work items needing a thickness: valid range, whether reviewed wall width may be used, volume allowance | work_key, thickness_min_mm, thickness_max_mm, thickness_from_dimension_width, volume_allowance_pct, note |
 | `recipe_aliases.csv` | Extra phrases that identify a work item | work_key, match_text |

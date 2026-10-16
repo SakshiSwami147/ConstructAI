@@ -188,3 +188,5 @@ body.embedded .topbar { padding: 10px 16px; gap: 10px; }
 body.embedded .topbar select, body.embedded .topbar input { min-width: 0; max-width: 260px; }
 body.embedded .content { padding: 16px; }
 @media (max-width: 900px) { body.embedded .app { grid-template-columns: 1fr; } }
+
+td select[data-vendor] { min-width: 180px; }

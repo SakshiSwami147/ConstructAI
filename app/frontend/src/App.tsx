@@ -24,12 +24,28 @@ type ExtractedElement = {
   dimensions_source?: string;
   review_status: ElementReviewStatus;
   review_reasons: string[];
+  raw_dimension_text?: string | null;
+  original_unit?: string | null;
+  measurement_source?: string | null;
+};
+
+type ScaleCalibration = {
+  page: number;
+  status: "verified" | "single_reference" | "conflicting" | "unavailable";
+  pixels_per_metre?: number | null;
+  references: { raw_text: string; agrees_with_consensus: boolean }[];
+  reason: string;
 };
 
 type ExtractionResult = {
   source_name: string;
   elements: ExtractedElement[];
   extraction_id: string;
+  status?: "complete" | "partial" | "no_measurements";
+  extraction_method?: string | null;
+  warnings?: string[];
+  unresolved?: { text: string; reason: string; source_page?: number | null }[];
+  scale_calibration?: ScaleCalibration[];
 };
 
 type BOQItem = {
@@ -97,7 +113,8 @@ type BOMApprovalRecord = {
   procurement: { project_id: number; project_name: string; bom_id: number; list_id: number; item_count: number; bom_name: string };
 };
 
-type BOMApprovalForm = { approved_by: string; comment: string; acknowledge_warnings: boolean; project_name: string; project_code: string };
+type BOMApprovalForm = { approved_by: string; comment: string; acknowledge_warnings: boolean; project_name: string; project_code: string; procurement_project_id: number | null };
+type ProcurementProject = { id: number; name: string; code: string | null };
 
 type MappingRecipe = {
   work_key: string;
@@ -361,7 +378,7 @@ function App() {
       const record = await request<BOMApprovalRecord>(`/boqs/${boq.boq_id}/bom/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, comment: form.comment || null, project_code: form.project_code || null }),
+        body: JSON.stringify({ ...form, comment: form.comment || null, project_code: form.project_code || null, procurement_project_id: form.procurement_project_id }),
       });
       setBOMApproval(record);
       setScreen("procurement");
@@ -425,7 +442,13 @@ function UploadScreen({ inputRef, file, loading, onFileChange }: { inputRef: Rea
 function HumanReviewExtractionScreen({ extraction, loading, onEdit, onReview, onGenerate }: { extraction: ExtractionResult; loading: boolean; onEdit: (index: number, field: string, value: string) => void; onReview: (index: number, decision: "approved" | "rejected") => void; onGenerate: () => void }) {
   const approvedCount = extraction.elements.filter((element) => element.review_status === "approved").length;
   const rejectedCount = extraction.elements.filter((element) => element.review_status === "rejected").length;
-  const allApproved = extraction.elements.length > 0 && approvedCount === extraction.elements.length;
+  const pendingCount = extraction.elements.length - approvedCount - rejectedCount;
+  const allApproved = approvedCount > 0 && pendingCount === 0; // rejected elements are left out of the BOQ
+  const scale = extraction.scale_calibration?.[0];
+  const scaleText = !scale ? "Not assessed" : scale.status === "verified"
+    ? `Verified · ${scale.pixels_per_metre?.toFixed(1)} px/m (${scale.references.filter((r) => r.agrees_with_consensus).length} refs)`
+    : { single_reference: "Not established (1 reference)", conflicting: "Not established (references disagree)", unavailable: "Not established", verified: "" }[scale.status];
+  const notes = [...(extraction.warnings ?? []), ...(extraction.unresolved ?? []).map((item) => `${item.text} — ${item.reason}`)];
 
   return (
     <div className="screen">
@@ -433,15 +456,17 @@ function HumanReviewExtractionScreen({ extraction, loading, onEdit, onReview, on
         <div><span>Source document</span><strong>{extraction.source_name}</strong></div>
         <div><span>Elements found</span><strong>{extraction.elements.length}</strong></div>
         <div><span>Human decisions</span><strong className={allApproved ? "good-text" : "warning-text"}>{approvedCount} approved · {rejectedCount} rejected · {extraction.elements.length - approvedCount - rejectedCount} pending</strong></div>
+        <div><span>Drawing scale</span><strong className={scale?.status === "verified" ? "good-text" : "warning-text"} title={scale?.reason}>{scaleText}</strong></div>
       </div>
-      <div className="section-intro compact"><span className="section-index">02</span><div><h2>Detected construction elements</h2><p>Compare the entire extraction against the source drawing: the current OpenCV contour detector is a prototype, not a trained plan model, and cannot guarantee that every room, wall segment, door, or window is detected. Enter and verify measurements and units; the BOQ shows its calculation for review.</p></div></div>
-      {extraction.elements.length === 0 && <div className="issues"><strong>No elements were returned.</strong><span>The uploaded drawing did not produce usable extraction results. Check the file and try again.</span></div>}
+      <div className="section-intro compact"><span className="section-index">02</span><div><h2>Detected construction elements</h2><p>Elements are created only where a label and its dimension annotation were read from the drawing and confirmed by independent readings; nothing is estimated or filled in. Compare every row with the source drawing, add anything missing by hand, and approve or reject each element. The BOQ shows its calculation for review.</p></div></div>
+      {notes.length > 0 && <div className="issues"><strong>Extraction notes — nothing below was estimated or filled in</strong>{notes.map((note, index) => <span className="warning" key={`${index}-${note}`}>{note}</span>)}</div>}
+      {extraction.elements.length === 0 && <div className="issues"><strong>No measured elements were returned.</strong><span>{extraction.status === "no_measurements" ? "No dimension annotations could be read from this drawing. Nothing was guessed; check the file quality or enter elements manually." : "Readings were found but none could be tied to a room or element; see the notes above."}</span></div>}
       <div className="table-wrap"><table><thead><tr><th>#</th><th>Type</th><th>Description</th><th>Location</th><th>Length</th><th>Width</th><th>Height</th><th>Qty</th><th>Unit</th><th>Page</th><th>Review</th></tr></thead>
         <tbody>{extraction.elements.map((element, index) => <tr key={`${element.element_id ?? element.description}-${index}`}>
           <td className="number-cell">{index + 1}</td>
           <td><input value={element.element_type} onChange={(event) => onEdit(index, "element_type", event.target.value)} aria-label={`Element type ${index + 1}`} /></td>
           <td><input value={element.description} onChange={(event) => onEdit(index, "description", event.target.value)} aria-label={`Description ${index + 1}`} /></td>
-          <td><input value={element.location ?? ""} onChange={(event) => onEdit(index, "location", event.target.value)} aria-label={`Location ${index + 1}`} /></td>
+          <td><input className="location-input" title={element.location ?? ""} value={element.location ?? ""} onChange={(event) => onEdit(index, "location", event.target.value)} aria-label={`Location ${index + 1}`} /></td>
           <td><input className="dimension-input" placeholder="Not detected" value={element.dimensions?.length ?? ""} onChange={(event) => onEdit(index, "dimensions.length", event.target.value)} aria-label={`Length ${index + 1}`} /></td>
           <td><input className="dimension-input" placeholder="Not detected" value={element.dimensions?.width ?? ""} onChange={(event) => onEdit(index, "dimensions.width", event.target.value)} aria-label={`Width ${index + 1}`} /></td>
           <td><input className="dimension-input" placeholder="Not detected" value={element.dimensions?.height ?? ""} onChange={(event) => onEdit(index, "dimensions.height", event.target.value)} aria-label={`Height ${index + 1}`} /></td>
@@ -452,10 +477,10 @@ function HumanReviewExtractionScreen({ extraction, loading, onEdit, onReview, on
             {unitOptions.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
           </select></td>
           <td><input type="number" min="1" value={element.source_page ?? ""} onChange={(event) => onEdit(index, "source_page", event.target.value)} aria-label={`Source page ${index + 1}`} /></td>
-          <td><strong className={element.review_status === "approved" ? "good-text" : "warning-text"}>{element.review_status}</strong>{element.dimensions && <small>Measurement source: {element.dimensions_source ?? "not recorded"}{element.dimensions_source === "ocr" ? " — verify against drawing" : ""}</small>}<div className="row-actions"><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "approved")}>Approve</button><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "rejected")}>Reject</button></div></td>
+          <td><strong className={element.review_status === "approved" ? "good-text" : "warning-text"}>{element.review_status}</strong>{element.dimensions && <small>Measurement source: {element.dimensions_source ?? "not recorded"}{element.dimensions_source === "ocr" ? " — verify against drawing" : ""}</small>}{element.raw_dimension_text && <small>Read on drawing: {element.raw_dimension_text}{element.original_unit ? ` (${element.original_unit})` : ""} → metres</small>}<div className="row-actions"><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "approved")}>Approve</button><button type="button" className="secondary-button" disabled={loading} onClick={() => onReview(index, "rejected")}>Reject</button></div></td>
         </tr>)}</tbody>
       </table></div>
-      <div className="action-row"><button className="primary-button" type="button" onClick={onGenerate} disabled={loading || !allApproved}>{loading ? "Generating BOQ..." : allApproved ? "Generate BOQ →" : "Approve every element first"}</button></div>
+      <div className="action-row"><button className="primary-button" type="button" onClick={onGenerate} disabled={loading || !allApproved}>{loading ? "Generating BOQ..." : allApproved ? "Generate BOQ →" : approvedCount === 0 && pendingCount === 0 ? "Approve at least one element" : "Approve or reject every element first"}</button></div>
     </div>
   );
 }
@@ -540,9 +565,9 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError,
           return <tr key={item["BOQ item"]}><td>{item["BOQ item"]}</td><td>{item.Description}</td><td>{item["Matched work item"]}</td><td>{Math.round(item.Confidence * 100)}%</td><td><span className={`type-tag ${item.Status === "OK" || item.Status === "MANUAL" ? "good-text" : "warning-text"}`}>{item.Status}</span></td><td>{needsConfirmation ? <select aria-label={`Select and confirm recipe for BOQ item ${itemNumber}`} value="" disabled={loading || !recipeOptions[itemNumber]} onChange={(event) => onMapItem(itemNumber, event.target.value)}><option value="">{recipeOptions[itemNumber] ? "Select verified recipe" : "Loading recipes..."}</option>{(recipeOptions[itemNumber] ?? []).filter((recipe) => recipe.unit === unit).map((recipe) => <option key={recipe.work_key} value={recipe.work_key}>{recipe.description} ({recipe.unit})</option>)}</select> : item.Status === "MANUAL" ? <span>Human-selected; verify the match.</span> : "—"}</td></tr>;
         })}
       </tbody></table></div>
-      {(bom.deductions ?? []).length > 0 && <><h3>Opening deductions</h3><div className="table-wrap"><table><thead><tr><th>Host BOQ item</th><th>Opening</th><th>Area each (m2)</th><th>Count</th><th>Deducted (m2)</th><th>Rule</th></tr></thead><tbody>
+      {(bom.deductions ?? []).length > 0 && <details className="deductions-summary"><summary><strong>Opening deductions:</strong> {(bom.deductions ?? []).length} door/window openings, {(bom.deductions ?? []).reduce((a, d) => a + d["Deducted (m2)"], 0).toFixed(2)} m² removed from wall quantities <span className="muted">(click to check)</span></summary><div className="table-wrap"><table><thead><tr><th>Host BOQ item</th><th>Opening</th><th>Area each (m2)</th><th>Count</th><th>Deducted (m2)</th><th>Rule</th></tr></thead><tbody>
         {(bom.deductions ?? []).map((d) => <tr key={`${d["BOQ item"]}-${d["Opening BOQ item"]}-${d.Rule}`}><td>{d["BOQ item"]}</td><td>{d["Opening BOQ item"]} · {d.Opening}</td><td>{d["Opening area each (m2)"]}</td><td>{d.Count}</td><td>{d["Deducted (m2)"]}</td><td className="calculation">{d.Rule}</td></tr>)}
-      </tbody></table></div></>}
+      </tbody></table></div></details>}
       {(bom.suggestions ?? []).length > 0 && <><h3>Possibly missing scope — not included in the BOM</h3><div className="table-wrap"><table><thead><tr><th>For BOQ item</th><th>Missing work</th><th>Suggested quantity</th><th>Basis</th></tr></thead><tbody>
         {(bom.suggestions ?? []).map((sg) => <tr key={`${sg["For BOQ item"]}-${sg["Missing work"]}`}><td>{sg["For BOQ item"]}</td><td>{sg["Missing work"]}</td><td>{sg["Suggested quantity"] === null ? "From drawings" : `${sg["Suggested quantity"]} ${sg.Unit}`}</td><td className="calculation">{sg.Basis}</td></tr>)}
       </tbody></table></div></>}
@@ -558,7 +583,16 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError,
 }
 
 function BOMApprovalPanel({ boq, bom, loading, approval, onApprove, onOpen }: { boq: BOQ; bom: BOMResult; loading: boolean; approval: BOMApprovalRecord | null; onApprove: (form: BOMApprovalForm) => void; onOpen: () => void }) {
-  const [form, setForm] = useState<BOMApprovalForm>({ approved_by: "", comment: "", acknowledge_warnings: false, project_name: boq.source_name, project_code: "" });
+  const [form, setForm] = useState<BOMApprovalForm>({ approved_by: "", comment: "", acknowledge_warnings: false, project_name: boq.source_name, project_code: "", procurement_project_id: null });
+  const [projects, setProjects] = useState<ProcurementProject[]>([]);
+  useEffect(() => {
+    // existing procurement projects, so a revised drawing can be added to the same project and keep its purchase history
+    fetch(`${API_BASE}/procurement/api/projects`).then((r) => (r.ok ? r.json() : [])).then((list: ProcurementProject[]) => {
+      setProjects(list);
+      const same = list.find((p) => p.name === boq.source_name);
+      if (same) setForm((f) => ({ ...f, procurement_project_id: same.id }));
+    }).catch(() => setProjects([]));
+  }, [boq.source_name]);
   const warnings = bom.validation.warnings;
   const blockedReason = !form.approved_by.trim() ? "Enter the approver name" : warnings.length > 0 && !form.acknowledge_warnings ? "Acknowledge the warnings above" : "";
   if (approval) {
@@ -570,8 +604,14 @@ function BOMApprovalPanel({ boq, bom, loading, approval, onApprove, onOpen }: { 
     <p className="muted">Confirms the material quantities above are reviewed. The BOM becomes a read-only snapshot in procurement; vendors, prices and contracts are handled there with their own approvals.</p>
     <div className="approval-form">
       <label><span>Approved by *</span><input value={form.approved_by} onChange={(e) => setForm({ ...form, approved_by: e.target.value })} placeholder="Reviewer name" aria-label="Approved by" /></label>
-      <label><span>Procurement project</span><input value={form.project_name} onChange={(e) => setForm({ ...form, project_name: e.target.value })} aria-label="Procurement project name" /></label>
-      <label><span>Project code</span><input value={form.project_code} onChange={(e) => setForm({ ...form, project_code: e.target.value })} placeholder="Optional, used in PO numbers" aria-label="Project code" /></label>
+      <label><span>Procurement project</span><select value={form.procurement_project_id ?? ""} onChange={(e) => setForm({ ...form, procurement_project_id: e.target.value ? Number(e.target.value) : null })} aria-label="Procurement project">
+        <option value="">+ Create new project</option>
+        {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.code ? ` · ${p.code}` : ""}</option>)}
+      </select></label>
+      {form.procurement_project_id === null ? <>
+        <label><span>New project name</span><input value={form.project_name} onChange={(e) => setForm({ ...form, project_name: e.target.value })} aria-label="Procurement project name" /></label>
+        <label><span>Project code</span><input value={form.project_code} onChange={(e) => setForm({ ...form, project_code: e.target.value })} placeholder="Optional, used in PO numbers" aria-label="Project code" /></label>
+      </> : <label><span>&nbsp;</span><span className="muted">The BOM is added to this project; its earlier materials and purchase orders stay there.</span></label>}
       <label className="wide"><span>Comment</span><input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} placeholder="Optional" aria-label="Approval comment" /></label>
       {warnings.length > 0 && <label className="wide check"><input type="checkbox" checked={form.acknowledge_warnings} onChange={(e) => setForm({ ...form, acknowledge_warnings: e.target.checked })} aria-label="Acknowledge warnings" /> <span>I have reviewed the {warnings.length} warning(s) listed above</span></label>}
     </div>

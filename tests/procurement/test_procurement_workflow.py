@@ -338,3 +338,65 @@ def test_summary(setup, client):
     _gen(client, setup, [{"procurement_item_id": c["id"], "vendor_id": setup["v1"]["id"], "quantity": 10, "rate": 10}])
     s = client.get(f"/api/projects/{setup['project']['id']}/summary").json()
     assert s["po"]["count"] == 1 and s["po"]["value"] == 100 and s["boms"]["manual_test"] == 1
+
+
+# ------------------------------------------------------------------ vendor per material + place orders
+def test_choose_vendor_on_materials_and_place_orders(setup, client):
+    lid, c, s = setup["list"]["id"], setup["cement"], setup["steel"]
+    base = f"/api/procurement-lists/{lid}/items"
+    # contractor-only party cannot supply; cleared vendor clears rate
+    assert client.put(f"{base}/{c['id']}/vendor", json={"vendor_id": setup["c1"]["id"], "agreed_rate": 5}).status_code == 422
+    r = client.put(f"{base}/{c['id']}/vendor", json={"vendor_id": setup["v1"]["id"], "agreed_rate": 10.5}).json()
+    assert r["vendor_id"] == setup["v1"]["id"] and r["agreed_rate"] == 10.5 and r["agreed_amount"] == 1050
+    # choosing a quotation fills vendor and rate from the quote
+    q = client.post("/api/quotations", json={"vendor_id": setup["v2"]["id"], "procurement_item_id": s["id"],
+                                             "material_name": "Steel", "rate": 95}).json()
+    r = client.put(f"{base}/{s['id']}/vendor", json={"quotation_id": q["id"]}).json()
+    assert r["vendor_id"] == setup["v2"]["id"] and r["agreed_rate"] == 95 and r["quotation_id"] == q["id"]
+
+    pos = client.post(f"/api/procurement-lists/{lid}/place-orders", json={"tax_pct": 18, "actor": "QA"})
+    assert pos.status_code == 201, pos.text
+    by_vendor = {p["vendor"]["name"]: p for p in pos.json()}
+    assert set(by_vendor) == {"Supplier A", "Supplier B"}
+    assert by_vendor["Supplier A"]["lines"][0]["quantity"] == 100 and by_vendor["Supplier A"]["subtotal"] == 1050
+    assert by_vendor["Supplier B"]["lines"][0]["quotation_id"] == q["id"]
+    # everything ordered: nothing left to place
+    assert client.post(f"/api/procurement-lists/{lid}/place-orders", json={}).status_code == 422
+    items = {i["name"]: i for i in client.get(f"/api/procurement-lists/{lid}").json()["items"]}
+    assert items["Cement"]["remaining"] == 0 and items["Steel"]["remaining"] == 0
+
+
+def test_place_orders_requires_rate_and_only_orders_remaining(setup, client):
+    lid, c = setup["list"]["id"], setup["cement"]
+    client.post("/api/purchase-orders/generate", json={"list_id": lid, "assignments": [
+        {"procurement_item_id": c["id"], "vendor_id": setup["v1"]["id"], "quantity": 40, "rate": 10}]})
+    client.put(f"/api/procurement-lists/{lid}/items/{c['id']}/vendor", json={"vendor_id": setup["v2"]["id"]})
+    r = client.post(f"/api/procurement-lists/{lid}/place-orders", json={})
+    assert r.status_code == 422 and "agreed rate" in r.json()["detail"]["message"]
+    client.put(f"/api/procurement-lists/{lid}/items/{c['id']}/vendor", json={"vendor_id": setup["v2"]["id"], "agreed_rate": 9})
+    po = client.post(f"/api/procurement-lists/{lid}/place-orders", json={}).json()[0]
+    assert po["lines"][0]["quantity"] == 60  # only the unordered balance
+
+
+def test_old_database_gets_new_columns(tmp_path):
+    """An existing procurement.db from the previous version is upgraded in place, keeping its rows."""
+    import sqlite3
+    from sqlalchemy import create_engine, inspect
+    from constructai.procurement import app as papp
+    from constructai.procurement.db import Base
+    db = tmp_path / "old.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE procurement_items (id INTEGER PRIMARY KEY, list_id INTEGER, name VARCHAR(300), "
+                "quantity FLOAT, unit VARCHAR(30))")
+    con.execute("INSERT INTO procurement_items (list_id, name, quantity, unit) VALUES (1, 'Cement', 10, 'bag')")
+    con.commit(); con.close()
+    eng = create_engine(f"sqlite:///{db}")
+    old_engine = papp.engine
+    papp.engine = eng
+    try:
+        papp._add_missing_columns()
+    finally:
+        papp.engine = old_engine
+    cols = {c["name"] for c in inspect(eng).get_columns("procurement_items")}
+    assert {"vendor_id", "agreed_rate", "quotation_id", "est_rate"} <= cols
+    assert sqlite3.connect(db).execute("SELECT name FROM procurement_items").fetchone()[0] == "Cement"

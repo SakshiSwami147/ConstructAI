@@ -230,3 +230,23 @@ def test_api_host_link_flows_from_extraction_to_bom_deduction(monkeypatch):
     assert bom["validation"]["status"] == "ready", bom["validation"]
     assert bom["mapping"][0]["Deducted openings"] == pytest.approx(1.89)
     assert bom["deductions"][0]["Opening BOQ item"] == "2"
+
+
+def test_room_width_is_never_used_as_thickness():
+    """Extracted rooms carry real widths (e.g. 3.35 m); only walls may lend their width as a thickness."""
+    room = item(1, "Brick masonry external wall", 30, "m2", element_type="room",
+                dimensions=Dimensions(length=D("10"), width=D("0.23"), height=D("3")), dimensions_source="ocr")
+    assert run([room]).validation["status"] == "blocked"
+    wall = item(1, "Brick masonry external wall", 30, "m2", element_type="wall",
+                dimensions=Dimensions(length=D("10"), width=D("0.23"), height=D("3")), dimensions_source="text_layer")
+    bom = run([wall])
+    assert bom.validation["status"] == "ready" and bom.mapping[0]["Thickness source"] == "text_layer wall width"
+
+
+def test_width_element_types_come_from_config(data_copy):
+    cfg = json.loads((data_copy / "mapping_config.json").read_text())
+    cfg["width_as_thickness_element_types"] = ["wall", "room"]
+    (data_copy / "mapping_config.json").write_text(json.dumps(cfg))
+    room = item(1, "Brick masonry external wall", 30, "m2", element_type="room",
+                dimensions=Dimensions(length=D("10"), width=D("0.23"), height=D("3")), dimensions_source="ocr")
+    assert run([room], agent=MappingAgent(rules_dir=data_copy)).validation["status"] == "ready"

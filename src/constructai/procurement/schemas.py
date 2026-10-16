@@ -49,6 +49,19 @@ class ManualBomIn(_In):
     items: list[ItemIn] = Field(default_factory=list)
 
 
+class VendorChoiceIn(_In):
+    vendor_id: Optional[int] = None
+    agreed_rate: Optional[float] = Field(None, ge=0)
+    quotation_id: Optional[int] = None
+
+
+class PlaceOrdersIn(_In):
+    delivery_address: Optional[str] = None
+    delivery_date: Optional[date] = None
+    tax_pct: float = Field(0, ge=0, le=100)
+    actor: Optional[str] = None
+
+
 class ProcListIn(_In):
     name: str = Field(min_length=1)
     bom_id: Optional[int] = None
@@ -232,7 +245,8 @@ def ser_proc_item(i: m.ProcurementItem, alloc: dict | None = None) -> dict:
     out = {"id": i.id, "list_id": i.list_id, "bom_item_id": i.bom_item_id, "item_code": i.item_code, "name": i.name,
            "specification": i.specification, "category": i.category, "quantity": i.quantity, "unit": i.unit,
            "est_rate": i.est_rate, "est_amount": r2(i.quantity * i.est_rate) if i.est_rate is not None else None,
-           "notes": i.notes}
+           "notes": i.notes, "vendor_id": i.vendor_id, "agreed_rate": i.agreed_rate, "quotation_id": i.quotation_id,
+           "agreed_amount": r2(i.quantity * i.agreed_rate) if i.agreed_rate is not None else None}
     if alloc:
         out.update(alloc)
     return out

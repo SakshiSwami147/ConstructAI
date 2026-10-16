@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 
 from . import models as m
 from .db import Base, engine, SessionLocal
@@ -20,9 +20,24 @@ STARTER_TEMPLATES = [("Standard Supply Agreement (starter)", "supply", "supply_c
                      ("Standard Contractor Agreement (starter)", "contractor", "contractor_agreement.j2")]
 
 
+def _add_missing_columns():
+    """Additive upgrade: add new nullable columns to tables created by an older version (keeps all data)."""
+    insp = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing or not col.nullable:
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN {col.name} {col.type.compile(engine.dialect)}'))
+
+
 def init_db():
-    """Create tables and load the editable starter contract templates on first run."""
+    """Create tables, upgrade older databases, and load the editable starter contract templates on first run."""
     Base.metadata.create_all(engine)
+    _add_missing_columns()
     with SessionLocal() as db:
         if not db.scalar(select(m.ContractTemplate.id).limit(1)):
             for name, kind, fn in STARTER_TEMPLATES:

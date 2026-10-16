@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from ..db import get_db
-from ..schemas import ProcListIn, ItemIn, ser_proc_item
+from ..schemas import ProcListIn, ItemIn, VendorChoiceIn, PlaceOrdersIn, Assignment, GeneratePOsIn, ser_proc_item
+from .purchase_orders import generate_pos
 from ..services import err, get_or_404, item_allocation, allocated_qty, r2, EPS
 
 router = APIRouter(prefix="/api", tags=["procurement"])
@@ -116,3 +117,59 @@ def delete_item(lid: int, iid: int, db: Session = Depends(get_db)):
     db.query(m.Quotation).filter(m.Quotation.procurement_item_id == iid).update({"procurement_item_id": None})
     db.delete(it)
     db.commit()
+
+
+# ------------------------------------------------------------------ vendor choice per material + place orders
+@router.put("/procurement-lists/{lid}/items/{iid}/vendor")
+def set_item_vendor(lid: int, iid: int, body: VendorChoiceIn, db: Session = Depends(get_db)):
+    """Choose the vendor and agreed rate for one material. Clearing the vendor clears the rate."""
+    it = get_or_404(db, m.ProcurementItem, iid, "Procurement item")
+    if it.list_id != lid:
+        err(404, "Item not in this list")
+    vendor_id, rate, quote_id = body.vendor_id, body.agreed_rate, body.quotation_id
+    if quote_id:
+        q = get_or_404(db, m.Quotation, quote_id, "Quotation")
+        if q.procurement_item_id not in (None, iid):
+            err(422, "This quotation is for a different material.")
+        if vendor_id and vendor_id != q.vendor_id:
+            err(422, "This quotation belongs to a different vendor.")
+        vendor_id = q.vendor_id
+        if rate is None:
+            rate = q.rate
+    if vendor_id:
+        v = get_or_404(db, m.Vendor, vendor_id, "Vendor")
+        if not v.active:
+            err(422, f"Vendor '{v.name}' is deactivated.")
+        if v.kind not in ("supplier", "both"):
+            err(422, f"'{v.name}' is registered as a contractor only, not a material supplier.")
+    else:
+        rate, quote_id = None, None
+    it.vendor_id, it.agreed_rate, it.quotation_id = vendor_id, rate, quote_id
+    db.commit()
+    return ser_proc_item(it, item_allocation(db, it))
+
+
+@router.post("/procurement-lists/{lid}/place-orders", status_code=201)
+def place_orders(lid: int, body: PlaceOrdersIn, db: Session = Depends(get_db)):
+    """Create one draft purchase order per vendor for every material that has a vendor and agreed rate,
+    for the quantity not yet ordered. Materials without a vendor are left for later."""
+    pl = get_or_404(db, m.ProcurementList, lid, "Procurement list")
+    assignments, missing_rate = [], []
+    for it in pl.items:
+        if not it.vendor_id:
+            continue
+        remaining = it.quantity - allocated_qty(db, it.id)["total"]
+        if remaining <= EPS:
+            continue
+        if it.agreed_rate is None:
+            missing_rate.append(it.name)
+            continue
+        assignments.append(Assignment(procurement_item_id=it.id, vendor_id=it.vendor_id, quantity=remaining,
+                                      rate=it.agreed_rate, quotation_id=it.quotation_id))
+    if missing_rate:
+        err(422, f"Enter the agreed rate for: {', '.join(missing_rate)}")
+    if not assignments:
+        err(422, "No materials are ready to order. Choose a vendor and agreed rate for at least one material "
+                 "that still has quantity to order.")
+    return generate_pos(GeneratePOsIn(list_id=lid, assignments=assignments, delivery_address=body.delivery_address,
+                                      delivery_date=body.delivery_date, tax_pct=body.tax_pct, actor=body.actor), db)

@@ -18,13 +18,17 @@ from .services import parse_bom_file
 
 def handoff_approved_bom(bom_payload: dict, *, boq_id: str, extraction_id: str | None, source_name: str,
                          approved_by: str, comment: str | None = None, project_name: str | None = None,
-                         project_code: str | None = None) -> dict:
+                         project_code: str | None = None, procurement_project_id: int | None = None) -> dict:
     payload = json.dumps({"boq_id": boq_id, "source_name": source_name, "bom": bom_payload}).encode()
     parsed = parse_bom_file("constructai_bom.json", payload)  # same validation as a file import
     meta = parsed["meta"]
     with SessionLocal() as db:
         project = None
-        if extraction_id:
+        if procurement_project_id:
+            project = db.get(m.Project, procurement_project_id)
+            if project is None:
+                raise LookupError(f"Procurement project {procurement_project_id} was not found")
+        elif extraction_id:
             project = db.scalar(select(m.Project).where(m.Project.external_ref == extraction_id))
         if project is None:
             project = m.Project(name=project_name or source_name, code=project_code or None,

@@ -141,6 +141,7 @@ class MappingAgent:
 
         dims = item.dimensions
         if (rule.thickness_from_dimension_width and dims is not None and dims.width is not None
+                and item.element_type.strip().lower() in self.rules.width_as_thickness_element_types
                 and item.dimensions_source in self.rules.trusted_dimension_sources):
             width_mm = float(dims.width) * 1000
             if lo <= width_mm <= hi:

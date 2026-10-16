@@ -69,6 +69,7 @@ class BOMRules:
     thickness_keywords: tuple[str, ...]
     thickness_keyword_window: int
     trusted_dimension_sources: frozenset[str]
+    width_as_thickness_element_types: frozenset[str]
     countable_units: frozenset[str]
     known_units: frozenset[str]
     work_rules: dict[str, WorkRule] = field(default_factory=dict)
@@ -128,7 +129,7 @@ def load_rules(data_dir: Path | None = None) -> BOMRules:
         raise ValueError("BOM rule file is missing: mapping_config.json")
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     for key in ("ok_score", "review_score", "stopwords", "thickness_keywords",
-                "thickness_keyword_window", "trusted_dimension_sources"):
+                "thickness_keyword_window", "trusted_dimension_sources", "width_as_thickness_element_types"):
         if key not in cfg:
             raise ValueError(f"mapping_config.json is missing '{key}'")
     if not 0 <= cfg["review_score"] <= cfg["ok_score"] <= 1:
@@ -146,6 +147,7 @@ def load_rules(data_dir: Path | None = None) -> BOMRules:
         stopwords=frozenset(cfg["stopwords"]), thickness_keywords=tuple(cfg["thickness_keywords"]),
         thickness_keyword_window=int(cfg["thickness_keyword_window"]),
         trusted_dimension_sources=frozenset(cfg["trusted_dimension_sources"]),
+        width_as_thickness_element_types=frozenset(t.strip().lower() for t in cfg["width_as_thickness_element_types"]),
         countable_units=frozenset(countable), known_units=frozenset(known),
     )
 

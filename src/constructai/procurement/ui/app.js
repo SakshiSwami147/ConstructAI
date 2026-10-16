@@ -137,21 +137,31 @@ const S = {
   view: store.get("view", "projects"),
   projects: [], project: null, lists: [], list: null, vendors: [],
   sel: { po: null, package: null, contract: null }, showSuperseded: false, contractTab: "drafts",
+  vendorTab: "directory", packageTab: "list", embedded: false,
 };
 
-const NAV = [
-  ["projects", "Projects & BOM import"], ["procurement", "Procurement materials"], ["vendors", "Vendor directory"],
-  ["quotes", "Quotation comparison"], ["pos", "Purchase orders"], ["packages", "Material packages"],
-  ["contractors", "Contractor assignments"], ["contracts", "Contract drafts"], ["history", "Approval & history"],
+const NAV_MAIN = [
+  ["procurement", "Materials"], ["vendors", "Vendors & quotes"], ["pos", "Purchase orders"],
+  ["purchases", "Purchase history"], ["contracts", "Contracts & approvals"],
 ];
+// Inside ConstructAI the approved BOM arrives automatically, so "Projects & BOM import" is only shown standalone.
+const navItems = () => (S.embedded ? NAV_MAIN : [["projects", "Projects & BOM import"], ...NAV_MAIN]);
+// Older screen names now live as tabs inside the merged sections.
+const VIEW_ALIAS = { quotes: ["vendors", "vendorTab", "quotes"], history: ["contracts", "contractTab", "approvals"] };
+function resolveView(view) {
+  if (VIEW_ALIAS[view]) { const [v, key, tab] = VIEW_ALIAS[view]; S[key] = tab; view = v; }
+  if (S.embedded && view === "projects") view = "procurement";
+  if (view === "packages" || view === "contractors") view = "procurement";  // packages are not used in this workflow
+  return view;
+}
 
 function renderNav(pending = 0) {
-  $("#nav").innerHTML = NAV.map(([id, label], i) => `<button data-v="${id}" class="${S.view === id ? "active" : ""}">
-    <span class="num">${i + 1}</span>${label}${id === "history" && pending ? `<span class="badge accent">${pending}</span>` : ""}</button>`).join("");
+  $("#nav").innerHTML = navItems().map(([id, label], i) => `<button data-v="${id}" class="${S.view === id ? "active" : ""}">
+    <span class="num">${i + 1}</span>${label}${id === "contracts" && pending ? `<span class="badge accent">${pending}</span>` : ""}</button>`).join("");
   $$("#nav button").forEach((b) => (b.onclick = () => { go(b.dataset.v); $("#sidebar").classList.remove("open"); }));
 }
 
-function go(view) { S.view = view; store.set("view", view); render(); }
+function go(view) { S.view = resolveView(view); store.set("view", S.view); render(); }
 
 async function loadProjects() {
   S.projects = await api("GET", "/api/projects");
@@ -522,29 +532,148 @@ function newListModal(bomId, bomName) {
 }
 
 // ---------------------------------------------------------------- 2. procurement materials
+function materialForm(listId, it, after) {
+  openModal({
+    title: it ? `Edit material · ${esc(it.name)}` : "Add material", wide: true, submitLabel: it ? "Save" : "Add",
+    body: `<p class="spec">Changes here never alter the approved BOM.</p>${formHTML(ITEM_FIELDS, it || {})}`,
+    onSubmit: async (m) => {
+      const vals = readForm(m, ITEM_FIELDS); if (!vals) return false;
+      vals.notes = it ? it.notes ?? null : null;
+      if (it) await api("PUT", `/api/procurement-lists/${listId}/items/${it.id}`, vals);
+      else await api("POST", `/api/procurement-lists/${listId}/items`, vals);
+      toast(it ? "Material updated" : "Material added"); after();
+    },
+  });
+}
+
+const readyToOrder = (items) => items.filter((i) => i.vendor_id && i.agreed_rate != null && i.remaining > 1e-9);
+
+function placeOrdersModal(list, vendors) {
+  const vname = (id) => vendors.find((x) => x.id === id)?.name || `Vendor ${id}`;
+  const ready = readyToOrder(list.items);
+  const noRate = list.items.filter((i) => i.vendor_id && i.agreed_rate == null && i.remaining > 1e-9);
+  const noVendor = list.items.filter((i) => !i.vendor_id && i.remaining > 1e-9);
+  const groups = {};
+  ready.forEach((i) => (groups[i.vendor_id] = groups[i.vendor_id] || []).push(i));
+  let grand = 0;
+  const tables = Object.entries(groups).map(([vid, items]) => {
+    const sub = items.reduce((a, i) => a + i.remaining * i.agreed_rate, 0); grand += sub;
+    return `<h3 style="margin:14px 0 6px">${esc(vname(Number(vid)))} <span class="spec">· ${items.length} item(s) · ${money(sub)} before tax</span></h3>
+      <div class="tbl-wrap"><table><thead><tr><th>Material</th><th class="num">Qty</th><th>Unit</th><th class="num">Agreed rate</th><th class="num">Amount</th></tr></thead><tbody>
+      ${items.map((i) => `<tr><td>${esc(i.name)}</td><td class="num">${qty(i.remaining)}</td><td>${esc(i.unit)}</td><td class="num">${money(i.agreed_rate)}</td><td class="num">${money(i.remaining * i.agreed_rate)}</td></tr>`).join("")}</tbody></table></div>`;
+  }).join("");
+  openModal({
+    title: `Place orders · ${Object.keys(groups).length} purchase order(s)`, wide: true, submitLabel: "Create draft purchase orders",
+    body: `${noRate.length ? `<div class="alert error">Enter the agreed rate for: ${noRate.map((i) => esc(i.name)).join(", ")}</div>` : ""}
+      ${noVendor.length ? `<div class="alert warn">${noVendor.length} material(s) have no vendor yet and will stay on the list for later: ${noVendor.map((i) => esc(i.name)).join(", ")}</div>` : ""}
+      <div class="alert info">One draft PO is created per vendor for the quantity not yet ordered. Each PO still needs review and approval before it is final; nothing is sent automatically.</div>
+      ${tables}<p style="text-align:right;margin-top:10px"><b>Total before tax: ${money(grand)}</b></p>
+      <div class="form">${fieldHTML({ name: "delivery_address", label: "Delivery address", type: "textarea" }, S.project.default_delivery_address)}
+        ${fieldHTML({ name: "delivery_date", label: "Required delivery date", type: "date" })}
+        ${fieldHTML({ name: "tax_pct", label: "Tax %", type: "number", min: 0, step: "any", hint: "Editable per PO later" }, 0)}</div>`,
+    onSubmit: async (m, showErr) => {
+      if (noRate.length) { showErr("Enter the missing agreed rates on the Materials list first."); return false; }
+      const pos = await api("POST", `/api/procurement-lists/${list.id}/place-orders`, {
+        delivery_address: $("[name=delivery_address]", m).value.trim() || null, delivery_date: $("[name=delivery_date]", m).value || null,
+        tax_pct: Number($("[name=tax_pct]", m).value || 0), actor: getActor() || null,
+      });
+      toast(`${pos.length} draft PO(s) created: ${pos.map((x) => x.po_number).join(", ")}`);
+      S.sel.po = pos[0].id; go("pos");
+    },
+  });
+}
+
 VIEWS.procurement = async (v) => {
   if (needList(v)) return;
-  await refreshList();
-  const l = S.list;
-  v.innerHTML = `<h1>Procurement materials</h1><p class="sub">Editable procurement draft. Changes here never alter the source BOM. Allocated quantities come from active purchase orders and packages.</p>
-    <div class="card"><div class="card-h"><h2>${esc(l.name)}</h2>${l.bom_name ? `<span class="spec">from ${esc(l.bom_name)}</span> ${sourceBadge(l.bom_source)}` : `<span class="badge">Manual list</span>`}
-      <div class="spacer"></div><button class="btn" id="renameList">Rename</button><button class="btn primary" id="toPO">Assign to vendors → POs</button></div>
-      <div class="card-b flush" id="ptable"></div></div>`;
-  const reload = async () => { await refreshList(); tbl.redraw(S.list.items); };
-  const tbl = itemTable($("#ptable", v), {
-    items: l.items, editable: true, showAlloc: true,
-    onSave: async (id, vals) => { await api("PUT", `/api/procurement-lists/${l.id}/items/${id}`, vals); toast("Material updated"); await reload(); },
-    onDelete: async (id) => { await api("DELETE", `/api/procurement-lists/${l.id}/items/${id}`); toast("Material removed"); await reload(); },
-    onAdd: async (vals) => { await api("POST", `/api/procurement-lists/${l.id}/items`, vals); toast("Material added"); await reload(); },
-  });
-  $("#renameList").onclick = () => {
-    const f = [{ name: "name", label: "Name", required: true }];
-    openModal({ title: "Rename procurement list", body: formHTML(f, { name: l.name }), onSubmit: async (m) => {
-      const vals = readForm(m, f); if (!vals) return false;
-      await api("PUT", `/api/procurement-lists/${l.id}`, { name: vals.name }); await loadLists(); render();
-    } });
+  await Promise.all([refreshList(), loadVendors()]);
+  const [quotes, lastPaid] = await Promise.all([api("GET", `/api/quotations?list_id=${S.list.id}`),
+    api("GET", `/api/purchase-history/last-rates?list_id=${S.list.id}`)]);
+  const l = S.list, sup = suppliers();
+  const ready = readyToOrder(l.items);
+  const readyVendors = new Set(ready.map((i) => i.vendor_id)).size;
+  const quoteFor = (itemId, vendorId) => quotes.filter((q) => q.procurement_item_id === itemId && q.vendor_id === vendorId && !q.expired)
+    .sort((a, b) => a.rate - b.rate)[0];
+  const lowest = (itemId) => quotes.filter((q) => q.procurement_item_id === itemId && q.vendor_active && !q.expired).sort((a, b) => a.rate - b.rate)[0];
+  let estTotal = 0, orderTotal = 0;
+  const rows = l.items.map((it) => {
+    if (it.est_rate != null) estTotal += it.quantity * it.est_rate;
+    const open = it.remaining > 1e-9;
+    const value = it.agreed_rate != null && open ? it.remaining * it.agreed_rate : null;
+    if (value != null && it.vendor_id) orderTotal += value;
+    const pct = Math.min(100, (it.allocated_total / it.quantity) * 100);
+    const low = lowest(it.id);
+    const vendorCell = open
+      ? `<select data-vendor="${it.id}"><option value="">— choose vendor —</option>${sup.map((x) => { const q = quoteFor(it.id, x.id);
+          return `<option value="${x.id}" ${x.id === it.vendor_id ? "selected" : ""}>${esc(x.name)}${q ? ` (quote ${money(q.rate)})` : ""}</option>`; }).join("")}</select>`
+      : `<span class="badge ok">Ordered</span>`;
+    const rateCell = open
+      ? `<input data-rate="${it.id}" type="number" step="any" min="0" value="${it.agreed_rate ?? ""}" placeholder="agreed rate" style="width:110px">
+         ${low ? `<div class="spec">lowest quote ${money(low.rate)} · ${esc(low.vendor_name)}</div>` : ""}
+         ${lastPaid[it.id] ? `<div class="spec" title="${esc(lastPaid[it.id].po_number)} · ${esc(lastPaid[it.id].project_name)}">last paid ${money(lastPaid[it.id].rate)} · ${esc(lastPaid[it.id].vendor_name)} · ${dt(lastPaid[it.id].date.slice(0, 10))}</div>` : ""}`
+      : (it.agreed_rate != null ? money(it.agreed_rate) : "—");
+    return `<tr data-id="${it.id}"><td><b>${esc(it.name)}</b>${it.item_code ? ` <span class="spec">${esc(it.item_code)}</span>` : ""}${it.specification ? `<div class="spec">${esc(it.specification)}</div>` : ""}${traceLine(it)}</td>
+      <td>${esc(it.category || "")}</td><td class="num">${qty(it.quantity)} ${esc(it.unit)}</td>
+      <td class="num">${it.est_rate != null ? money(it.est_rate) : `<span class="badge warn">No estimate</span>`}</td>
+      <td class="num">${qty(it.allocated_total)} / ${qty(it.quantity)}<div class="bar"><i class="${pct >= 99.99 ? "full" : ""}" style="width:${pct}%"></i></div>${open ? `<div class="spec">${qty(it.remaining)} to order</div>` : ""}</td>
+      <td>${vendorCell}</td><td class="num">${rateCell}</td><td class="num">${money(value)}</td>
+      <td><div class="actions"><button class="btn sm" data-edit="${it.id}">Edit</button><button class="btn sm danger" data-del="${it.id}">Remove</button></div></td></tr>`;
+  }).join("");
+  v.innerHTML = `<h1>Materials</h1><p class="sub">Choose a vendor and agreed rate for each material, then place the orders: one purchase order per vendor. Estimated rates come from the BOM catalog and are for reference only. Changes here never alter the approved BOM.</p>
+    <div class="card"><div class="card-h"><h2>${esc(l.name)}</h2>${l.bom_name ? sourceBadge(l.bom_source) : `<span class="badge">Manual list</span>`}
+      <div class="spacer"></div><button class="btn" id="addMat">+ Add material</button>
+      <button class="btn primary" id="placeOrders" ${ready.length ? "" : "disabled"}>Place orders${readyVendors ? ` (${readyVendors} vendor${readyVendors > 1 ? "s" : ""})` : ""}</button></div>
+      ${sup.length && l.items.some((i) => !i.vendor_id && i.remaining > 1e-9) ? `<div class="card-b row" style="border-bottom:1px solid var(--line)">
+        <span class="spec">Set one vendor for all materials without a vendor:</span>
+        <select id="bulkVendor"><option value="">— choose vendor —</option>${sup.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select>
+        <button class="btn sm" id="bulkApply">Apply</button><span class="spec">Rates fill from that vendor's quotation where one exists; otherwise enter them.</span></div>` : ""}
+      ${sup.length ? "" : `<div class="card-b"><div class="alert warn">No active suppliers yet. Add vendors in <b>Vendors & quotes</b> first. <button class="btn sm" id="goVendors">Add vendors</button></div></div>`}
+      <div class="card-b flush"><div class="tbl-wrap"><table><thead><tr><th>Material</th><th>Category</th><th class="num">Quantity</th><th class="num">Est. rate</th><th class="num">Ordered</th><th>Vendor</th><th class="num">Agreed rate</th><th class="num">Order value</th><th></th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="9" class="empty">No materials yet.</td></tr>`}</tbody>
+      <tfoot><tr><td colspan="3">Estimated total (BOM catalog rates)</td><td class="num">${money(estTotal)}</td><td colspan="3" style="text-align:right">Ready to order (${ready.length} item${ready.length === 1 ? "" : "s"})</td><td class="num">${money(orderTotal)}</td><td></td></tr></tfoot>
+      </table></div></div></div>`;
+
+  const reload = () => render();
+  const save = async (itemId, body) => {
+    try { await api("PUT", `/api/procurement-lists/${l.id}/items/${itemId}/vendor`, body); reload(); } catch (e) { fail(e); reload(); }
   };
-  $("#toPO").onclick = () => generatePOModal();
+  $$("[data-vendor]", v).forEach((sel) => (sel.onchange = () => {
+    const itemId = Number(sel.dataset.vendor), vendorId = sel.value ? Number(sel.value) : null;
+    const rateVal = $(`[data-rate="${itemId}"]`, v).value;
+    if (!vendorId) return save(itemId, { vendor_id: null });
+    const q = quoteFor(itemId, vendorId);
+    if (q && rateVal === "") return save(itemId, { vendor_id: vendorId, quotation_id: q.id });  // rate from the vendor's own quote
+    save(itemId, { vendor_id: vendorId, agreed_rate: rateVal === "" ? null : Number(rateVal) });
+  }));
+  $$("[data-rate]", v).forEach((inp) => (inp.onchange = () => {
+    const itemId = Number(inp.dataset.rate), vendorId = Number($(`[data-vendor="${itemId}"]`, v).value) || null;
+    if (inp.value !== "" && (isNaN(Number(inp.value)) || Number(inp.value) < 0)) { inp.classList.add("invalid"); toast("Rate must be 0 or more", true); return; }
+    if (!vendorId) { toast("Choose the vendor first, then enter the agreed rate.", true); return; }
+    save(itemId, { vendor_id: vendorId, agreed_rate: inp.value === "" ? null : Number(inp.value) });
+  }));
+  $$("[data-edit]", v).forEach((b) => (b.onclick = () => materialForm(l.id, l.items.find((i) => i.id === Number(b.dataset.edit)), reload)));
+  $$("[data-del]", v).forEach((b) => (b.onclick = async () => {
+    const it = l.items.find((i) => i.id === Number(b.dataset.del));
+    if (!confirm(`Remove "${it.name}" from this list?`)) return;
+    try { await api("DELETE", `/api/procurement-lists/${l.id}/items/${it.id}`); toast("Material removed"); reload(); } catch (e) { fail(e); }
+  }));
+  $("#addMat").onclick = () => materialForm(l.id, null, reload);
+  const bulk = $("#bulkApply");
+  if (bulk) bulk.onclick = async () => {
+    const vendorId = Number($("#bulkVendor").value);
+    if (!vendorId) { toast("Choose a vendor first.", true); return; }
+    const targets = l.items.filter((i) => !i.vendor_id && i.remaining > 1e-9);
+    bulk.disabled = true;
+    try {
+      for (const it of targets) {
+        const q = quoteFor(it.id, vendorId);
+        await api("PUT", `/api/procurement-lists/${l.id}/items/${it.id}/vendor`, q ? { vendor_id: vendorId, quotation_id: q.id } : { vendor_id: vendorId });
+      }
+      toast(`Vendor set for ${targets.length} material(s). Enter the agreed rates, then place orders.`);
+    } catch (e) { fail(e); }
+    reload();
+  };
+  $("#placeOrders").onclick = () => placeOrdersModal(S.list, S.vendors);
+  const gv = $("#goVendors"); if (gv) gv.onclick = () => { S.vendorTab = "directory"; go("vendors"); };
 };
 
 // ---------------------------------------------------------------- 3. vendors
@@ -572,7 +701,7 @@ function vendorForm(vd, preset = {}) {
   });
 }
 
-VIEWS.vendors = async (v) => {
+const viewVendorDirectory = async (v) => {
   const q = store.get("vq", ""), kind = store.get("vkind", ""), showInactive = store.get("vinactive", true);
   const list = await api("GET", `/api/vendors?q=${encodeURIComponent(q)}&kind=${kind}&include_inactive=${showInactive}`);
   await loadVendors();
@@ -646,7 +775,7 @@ function quoteForm(q, preset = {}) {
   return m;
 }
 
-VIEWS.quotes = async (v) => {
+const viewQuotes = async (v) => {
   if (needList(v)) return;
   await Promise.all([loadVendors(), refreshList()]);
   const cmp = await api("GET", `/api/procurement-lists/${S.list.id}/comparison`);
@@ -663,7 +792,7 @@ VIEWS.quotes = async (v) => {
           <td class="num">${q.available_qty == null ? "—" : `${qty(q.available_qty)} ${q.covers_required_qty ? "" : `<span class="badge warn">Partial</span>`}`}</td>
           <td class="num">${q.lead_time_days != null ? q.lead_time_days + " d" : "—"}</td><td class="spec">${esc(q.payment_terms || "—")}</td>
           <td>${dt(q.valid_until)} ${q.expired ? `<span class="badge bad">Expired</span>` : ""}</td>
-          <td><div class="actions"><button class="btn sm primary" data-usepo="${q.id}" data-item="${c.item.id}" ${q.vendor_active && c.item.remaining > 0 ? "" : "disabled"}>Use for PO</button>
+          <td><div class="actions"><button class="btn sm primary" data-usepo="${q.id}" data-item="${c.item.id}" ${q.vendor_active && c.item.remaining > 0 ? "" : "disabled"}>Use this quote</button>
             <button class="btn sm" data-eq="${q.id}">Edit</button><button class="btn sm danger" data-dq="${q.id}">Delete</button></div></td></tr>`).join("")}</tbody></table></div>`
         : `<div class="empty">No quotations yet for this material.</div>`}</div></div>`).join("") : `<div class="card"><div class="empty">The procurement list is empty.</div></div>`}`;
   const all = cmp.flatMap((c) => c.quotations);
@@ -671,93 +800,29 @@ VIEWS.quotes = async (v) => {
   $$("[data-addq]", v).forEach((b) => (b.onclick = () => { const it = S.list.items.find((i) => i.id === Number(b.dataset.addq)); quoteForm(null, { procurement_item_id: it.id, material_name: it.name, unit: it.unit, specification: it.specification }); }));
   $$("[data-eq]", v).forEach((b) => (b.onclick = () => quoteForm(all.find((q) => q.id === Number(b.dataset.eq)))));
   $$("[data-dq]", v).forEach((b) => (b.onclick = async () => { if (!confirm("Delete this quotation?")) return; try { await api("DELETE", `/api/quotations/${b.dataset.dq}`); render(); } catch (e) { fail(e); } }));
-  $$("[data-usepo]", v).forEach((b) => (b.onclick = () => { const q = all.find((x) => x.id === Number(b.dataset.usepo)); generatePOModal({ [q.procurement_item_id]: { vendor_id: q.vendor_id, quotation_id: q.id, rate: q.rate } }); }));
+  $$("[data-usepo]", v).forEach((b) => (b.onclick = async () => {
+    const q = all.find((x) => x.id === Number(b.dataset.usepo));
+    try {
+      await api("PUT", `/api/procurement-lists/${S.list.id}/items/${b.dataset.item}/vendor`, { quotation_id: q.id });
+      toast(`${esc(q.vendor_name)} @ ${money(q.rate)} set on Materials`); render();
+    } catch (e) { fail(e); }
+  }));
 };
 
 // ---------------------------------------------------------------- 5. purchase orders
-async function generatePOModal(preset = {}) {
-  await Promise.all([loadVendors(), refreshList()]);
-  if (!suppliers().length) { toast("Add an active supplier in the Vendor directory first.", true); return; }
-  const quotes = await api("GET", `/api/quotations?list_id=${S.list.id}`);
-  const avail = S.list.items.filter((i) => i.remaining > 0);
-  if (!avail.length) { toast("All materials in this list are fully allocated.", true); return; }
-  const presetOnly = Object.keys(preset).length > 0;
-  const vOpts = (sel) => `<option value="">— vendor —</option>` + suppliers().map((x) => `<option value="${x.id}" ${x.id === sel ? "selected" : ""}>${esc(x.name)}</option>`).join("");
-  const qOpts = (item, sel) => `<option value="">— no quotation —</option>` + quotes.filter((q) => q.procurement_item_id === item.id && q.vendor_active).map((q) => `<option value="${q.id}" ${q.id === sel ? "selected" : ""}>${esc(q.vendor_name)} @ ${money(q.rate)}${q.expired ? " (expired)" : ""}</option>`).join("");
-  const p = S.project;
-  openModal({
-    title: "Assign materials to vendors → generate purchase orders", wide: true, submitLabel: "Generate draft POs",
-    body: `<div class="alert info">Tick materials, choose a vendor and agreed rate (or pick a quotation to fill it). One draft PO is created per vendor. Quantities are checked against what's still unallocated.</div>
-      <div class="tbl-wrap"><table><thead><tr><th></th><th>Material</th><th class="num">Remaining</th><th>Quotation</th><th>Vendor</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
-      ${avail.map((it) => { const pr = preset[it.id] || {}; const on = presetOnly ? !!preset[it.id] : false; return `<tr data-item="${it.id}">
-        <td><input type="checkbox" data-k="on" ${on ? "checked" : ""}></td><td><b>${esc(it.name)}</b><div class="spec">${esc(it.specification || "")}</div></td>
-        <td class="num">${qty(it.remaining)} ${esc(it.unit)}</td><td><select data-k="quote">${qOpts(it, pr.quotation_id)}</select></td><td><select data-k="vendor">${vOpts(pr.vendor_id)}</select></td>
-        <td class="num"><input data-k="qty" type="number" step="any" min="0" value="${it.remaining}" style="width:100px"></td>
-        <td class="num"><input data-k="rate" type="number" step="any" min="0" value="${pr.rate ?? ""}" style="width:110px" placeholder="agreed rate"></td><td class="num" data-amt>—</td></tr>`; }).join("")}
-      </tbody></table></div><br>
-      <div class="form">${fieldHTML({ name: "delivery_address", label: "Delivery address", type: "textarea" }, p.default_delivery_address)}
-        ${fieldHTML({ name: "delivery_date", label: "Required delivery date", type: "date" })}
-        ${fieldHTML({ name: "tax_pct", label: "Tax %", type: "number", min: 0, step: "any", hint: "Applied to each PO subtotal; editable per PO later" }, 0)}</div>
-      <p id="poSummary" class="spec"></p>`,
-    onOpen: (m) => {
-      const upd = () => {
-        const vend = new Set(); let tot = 0;
-        $$("tr[data-item]", m).forEach((tr) => {
-          const q = Number($("[data-k=qty]", tr).value), r = $("[data-k=rate]", tr).value;
-          $("[data-amt]", tr).textContent = q > 0 && r !== "" ? money(q * Number(r)) : "—";
-          if ($("[data-k=on]", tr).checked) { const vv = $("[data-k=vendor]", tr).value; if (vv) vend.add(vv); if (q > 0 && r !== "") tot += q * Number(r); }
-        });
-        $("#poSummary", m).textContent = `Will create ${vend.size} purchase order(s) · subtotal ${money(tot)} before tax`;
-      };
-      $$("tr[data-item]", m).forEach((tr) => {
-        $("[data-k=quote]", tr).onchange = (e) => {
-          const q = quotes.find((x) => x.id === Number(e.target.value));
-          if (q) { $("[data-k=vendor]", tr).value = q.vendor_id; $("[data-k=rate]", tr).value = q.rate; $("[data-k=on]", tr).checked = true; }
-          upd();
-        };
-        $$("input,select", tr).forEach((i) => i.addEventListener("input", upd));
-        $("[data-k=vendor]", tr).addEventListener("change", () => { $("[data-k=on]", tr).checked = true; const qs = $("[data-k=quote]", tr); const q = quotes.find((x) => x.id === Number(qs.value)); if (q && q.vendor_id !== Number($("[data-k=vendor]", tr).value)) qs.value = ""; upd(); });
-      });
-      upd();
-    },
-    onSubmit: async (m, showErr) => {
-      const assignments = [], errs = [];
-      $$("tr[data-item]", m).forEach((tr) => {
-        if (!$("[data-k=on]", tr).checked) return;
-        const it = S.list.items.find((i) => i.id === Number(tr.dataset.item));
-        const vendor = Number($("[data-k=vendor]", tr).value), q = Number($("[data-k=qty]", tr).value), rate = $("[data-k=rate]", tr).value, quote = Number($("[data-k=quote]", tr).value) || null;
-        const e = [];
-        if (!vendor) e.push("vendor"); if (!(q > 0)) e.push("quantity > 0"); else if (q > it.remaining + 1e-6) e.push(`quantity ≤ ${qty(it.remaining)}`);
-        if (rate === "" || Number(rate) < 0) e.push("agreed rate");
-        if (e.length) errs.push(`${it.name}: needs ${e.join(", ")}`);
-        else assignments.push({ procurement_item_id: it.id, vendor_id: vendor, quantity: q, rate: Number(rate), quotation_id: quote });
-      });
-      if (!assignments.length && !errs.length) errs.push("Tick at least one material.");
-      if (errs.length) { showErr(`<ul>${errs.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`); return false; }
-      const tax = Number($("[name=tax_pct]", m).value || 0);
-      const pos = await api("POST", "/api/purchase-orders/generate", {
-        list_id: S.list.id, assignments, tax_pct: tax, delivery_date: $("[name=delivery_date]", m).value || null,
-        delivery_address: $("[name=delivery_address]", m).value.trim() || null, actor: getActor() || null,
-      });
-      toast(`${pos.length} draft PO(s) created: ${pos.map((x) => x.po_number).join(", ")}`);
-      S.sel.po = pos[0].id; await refreshList(); go("pos");
-    },
-  });
-}
-
 VIEWS.pos = async (v) => {
   if (needProject(v)) return;
   const pos = await api("GET", `/api/projects/${S.project.id}/purchase-orders?include_superseded=${S.showSuperseded}`);
   v.innerHTML = `<h1>Purchase orders</h1><p class="sub">One PO per vendor. Draft and returned POs are editable; approved POs change only through revisions.</p>
     <div class="card"><div class="card-h"><h2>${pos.length} purchase order(s)</h2><label class="check"><input type="checkbox" id="ss" ${S.showSuperseded ? "checked" : ""}> Show superseded revisions</label>
-      <div class="spacer"></div><button class="btn primary" id="genPO" ${S.list ? "" : "disabled"}>+ Generate POs from list</button></div>
+      <div class="spacer"></div><button class="btn primary" id="genPO" ${S.list ? "" : "disabled"}>+ New orders from Materials</button></div>
       <div class="card-b flush">${pos.length ? `<div class="tbl-wrap"><table><thead><tr><th>PO</th><th>Vendor</th><th class="num">Lines</th><th class="num">Total</th><th>Delivery</th><th>Status</th><th>Updated</th></tr></thead><tbody>
       ${pos.map((p) => `<tr class="clickable ${S.sel.po === p.id ? "selected" : ""} ${p.superseded_by_id ? "muted" : ""}" data-po="${p.id}"><td><b>${revLabel(p.po_number, p.revision)}</b></td><td>${esc(p.vendor.name)}</td>
         <td class="num">${p.lines.length}</td><td class="num">${money(p.total)}</td><td>${dt(p.delivery_date)}</td><td>${statusBadge(p.status, p.superseded_by_id)}</td><td>${dt(p.updated_at)}</td></tr>`).join("")}
       </tbody></table></div>` : `<div class="empty"><b>No purchase orders yet</b>Assign materials to vendors from the procurement list or quotation comparison.</div>`}</div></div>
     <div id="poDetail"></div>`;
   $("#ss").onchange = (e) => { S.showSuperseded = e.target.checked; render(); };
-  $("#genPO").onclick = () => generatePOModal();
+  $("#genPO").onclick = () => go("procurement");
   $$("[data-po]", v).forEach((tr) => (tr.onclick = () => { S.sel.po = Number(tr.dataset.po); render(); }));
   if (S.sel.po && pos.some((p) => p.id === S.sel.po)) await poDetail($("#poDetail", v), S.sel.po);
 };
@@ -921,7 +986,7 @@ async function packageForm(pk) {
   });
 }
 
-VIEWS.packages = async (v) => {
+const viewPackageList = async (v) => {
   if (needProject(v)) return;
   const pks = await api("GET", `/api/projects/${S.project.id}/packages?include_superseded=${S.showSuperseded}`);
   v.innerHTML = `<h1>Material packages</h1><p class="sub">Club materials into work packages (optional). Quantities in packages count against the same allocation as POs, so nothing is ordered twice.</p>
@@ -960,7 +1025,7 @@ async function packageDetail(el, id) {
 }
 
 // ---------------------------------------------------------------- 7. contractor assignments
-VIEWS.contractors = async (v) => {
+const viewContractors = async (v) => {
   if (needProject(v)) return;
   await loadVendors();
   const pks = await api("GET", `/api/projects/${S.project.id}/packages`);
@@ -982,7 +1047,7 @@ VIEWS.contractors = async (v) => {
       ${cons.length ? `<div class="tbl-wrap"><table><thead><tr><th>Contractor</th><th>Trades</th><th>Contact</th><th>Status</th></tr></thead><tbody>${cons.map((c) => `<tr class="${c.active ? "" : "muted"}"><td><b>${esc(c.name)}</b></td><td class="spec">${esc(c.trades || "—")}</td><td>${esc([c.contact_person, c.phone].filter(Boolean).join(" · "))}</td><td>${c.active ? `<span class="badge ok">Active</span>` : `<span class="badge">Inactive</span>`}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="empty">No contractors yet.</div>`}</div></div>`;
   $("#newC").onclick = () => vendorForm(null, { kind: "contractor" });
-  $$("[data-open]", v).forEach((b) => (b.onclick = () => { S.sel.package = Number(b.dataset.open); go("packages"); }));
+  $$("[data-open]", v).forEach((b) => (b.onclick = () => { S.sel.package = Number(b.dataset.open); S.packageTab = "list"; go("packages"); }));
   $$("[data-assign]", v).forEach((b) => (b.onclick = async () => {
     const cid = Number($(`[data-asel="${b.dataset.assign}"]`, v).value);
     if (!cid) { toast("Choose a contractor first.", true); return; }
@@ -1064,10 +1129,11 @@ async function generateContractModal() {
 VIEWS.contracts = async (v) => {
   if (needProject(v)) return;
   const tab = S.contractTab;
-  v.innerHTML = `<h1>Contract drafts</h1><p class="sub">Vendor supply contracts and contractor agreements generated from saved records and editable templates. Approval is manual; nothing is signed or sent.</p>
-    <div class="row" style="margin-bottom:14px"><div class="pill-tabs"><button data-tab="drafts" class="${tab === "drafts" ? "active" : ""}">Drafts</button><button data-tab="templates" class="${tab === "templates" ? "active" : ""}">Templates</button></div></div><div id="ctBody"></div>`;
+  v.innerHTML = `<h1>Contracts & approvals</h1><p class="sub">Vendor supply contracts and contractor agreements generated from saved records and editable templates, plus the review queue and audit trail. Approval is manual; nothing is signed or sent.</p>
+    <div class="row" style="margin-bottom:14px"><div class="pill-tabs"><button data-tab="drafts" class="${tab === "drafts" ? "active" : ""}">Drafts</button><button data-tab="templates" class="${tab === "templates" ? "active" : ""}">Templates</button><button data-tab="approvals" class="${tab === "approvals" ? "active" : ""}">Approvals & history</button></div></div><div id="ctBody"></div>`;
   $$("[data-tab]", v).forEach((b) => (b.onclick = () => { S.contractTab = b.dataset.tab; render(); }));
   const body = $("#ctBody", v);
+  if (tab === "approvals") { await viewHistory(body); return; }
   if (tab === "templates") {
     const tpls = await api("GET", "/api/contract-templates");
     body.innerHTML = `<div class="card"><div class="card-h"><h2>Contract templates</h2><span class="spec">Starter templates are generic and fully editable</span><div class="spacer"></div><button class="btn primary" id="newT">+ New template</button></div><div class="card-b flush">
@@ -1119,7 +1185,7 @@ async function contractDetail(el, id) {
 }
 
 // ---------------------------------------------------------------- 9. approvals & history
-VIEWS.history = async (v) => {
+const viewHistory = async (v) => {
   if (needProject(v)) return;
   const pid = S.project.id, f = store.get("hfilter", "");
   const [pos, pks, cts, ev] = await Promise.all([api("GET", `/api/projects/${pid}/purchase-orders`), api("GET", `/api/projects/${pid}/packages`), api("GET", `/api/projects/${pid}/contracts`),
@@ -1141,7 +1207,70 @@ VIEWS.history = async (v) => {
         <td>${e.from_status ? statusBadge(e.from_status) : ""}${e.to_status && e.to_status !== e.from_status ? ` → ${statusBadge(e.to_status)}` : ""}</td><td>${esc(e.actor || "—")}</td><td>${esc(e.comment || "")}</td></tr>`).join("")}</tbody></table></div>`
         : `<div class="empty">No document activity yet.</div>`}</div></div>`;
   $("#hf").onchange = (e) => { store.set("hfilter", e.target.value); render(); };
-  $$("[data-goq]", v).forEach((b) => (b.onclick = () => { const [t, id, view] = b.dataset.goq.split(":"); S.sel[t] = Number(id); if (t === "contract") S.contractTab = "drafts"; go(view); }));
+  $$("[data-goq]", v).forEach((b) => (b.onclick = () => { const [t, id, view] = b.dataset.goq.split(":"); S.sel[t] = Number(id); if (t === "contract") S.contractTab = "drafts"; if (t === "package") S.packageTab = "list"; go(view); }));
+};
+
+// ---------------------------------------------------------------- purchase history (all projects)
+VIEWS.purchases = async (v) => {
+  const f = store.get("phFilter", { project: "", vendor: "", q: "", status: "" });
+  await loadVendors();
+  const params = new URLSearchParams();
+  if (f.project) params.set("project_id", f.project);
+  if (f.vendor) params.set("vendor_id", f.vendor);
+  if (f.q) params.set("q", f.q);
+  if (f.status) params.set("status", f.status);
+  const h = await api("GET", `/api/purchase-history?${params}`);
+  const opt = (val, label, cur) => `<option value="${esc(val)}" ${String(cur) === String(val) ? "selected" : ""}>${esc(label)}</option>`;
+  v.innerHTML = `<h1>Purchase history</h1><p class="sub">Every purchase order line from all projects, newest first. Rejected orders are hidden unless you filter for them; superseded revisions show only their latest version.</p>
+    <div class="stats"><div class="stat"><div class="k">Purchase orders</div><div class="v">${h.po_count}</div></div>
+      <div class="stat"><div class="k">Lines</div><div class="v">${h.rows.length}</div></div>
+      <div class="stat"><div class="k">Total value (before tax)</div><div class="v">${money(h.total)}</div></div>
+      ${h.by_vendor[0] ? `<div class="stat"><div class="k">Top vendor</div><div class="v" style="font-size:15px">${esc(h.by_vendor[0].vendor)}<br>${money(h.by_vendor[0].amount)}</div></div>` : ""}</div>
+    <div class="card"><div class="card-h">
+      <select id="phProject">${opt("", "All projects", f.project)}${S.projects.map((x) => opt(x.id, `${x.name}${x.code ? " · " + x.code : ""}`, f.project)).join("")}</select>
+      <select id="phVendor">${opt("", "All vendors", f.vendor)}${S.vendors.map((x) => opt(x.id, x.name, f.vendor)).join("")}</select>
+      <select id="phStatus">${opt("", "All except rejected", f.status)}${Object.entries(STATUS_LABEL).map(([k, l]) => opt(k, l, f.status)).join("")}</select>
+      <input id="phQ" placeholder="Search material…" value="${esc(f.q)}" style="min-width:200px">
+      <div class="spacer"></div><button class="btn" id="phCsv" ${h.rows.length ? "" : "disabled"}>Download CSV</button></div>
+      <div class="card-b flush">${h.rows.length ? `<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>PO</th><th>Project</th><th>Vendor</th><th>Material</th><th class="num">Qty</th><th>Unit</th><th class="num">Rate</th><th class="num">Amount</th><th>Status</th><th></th></tr></thead><tbody>
+      ${h.rows.map((r) => `<tr><td>${dt(r.date)}</td><td><b>${revLabel(r.po_number, r.revision)}</b></td><td>${esc(r.project_name)}</td><td>${esc(r.vendor_name)}</td>
+        <td>${esc(r.material)}${r.specification ? `<div class="spec">${esc(r.specification)}</div>` : ""}</td><td class="num">${qty(r.quantity)}</td><td>${esc(r.unit)}</td>
+        <td class="num">${money(r.rate)}</td><td class="num">${money(r.amount)}</td><td>${statusBadge(r.status)}</td>
+        <td><a class="btn sm" href="${BASE}/api/purchase-orders/${r.po_id}/pdf" target="_blank" rel="noopener">PDF</a></td></tr>`).join("")}
+      </tbody><tfoot><tr><td colspan="8">Total</td><td class="num">${money(h.total)}</td><td colspan="2"></td></tr></tfoot></table></div>`
+        : `<div class="empty"><b>No purchase orders found</b>Orders you place from Materials appear here, across all projects.</div>`}</div></div>`;
+  const setF = (k, val) => { store.set("phFilter", { ...f, [k]: val }); render(); };
+  $("#phProject").onchange = (e) => setF("project", e.target.value);
+  $("#phVendor").onchange = (e) => setF("vendor", e.target.value);
+  $("#phStatus").onchange = (e) => setF("status", e.target.value);
+  let t; $("#phQ").oninput = (e) => { clearTimeout(t); t = setTimeout(() => setF("q", e.target.value.trim()), 400); };
+  $("#phCsv").onclick = () => {
+    const head = ["Date", "PO", "Revision", "Project", "Vendor", "Material", "Specification", "Qty", "Unit", "Rate", "Amount", "Status"];
+    const cell = (x) => `"${String(x ?? "").replace(/"/g, '""')}"`;
+    const csv = [head, ...h.rows.map((r) => [r.date.slice(0, 10), r.po_number, r.revision, r.project_name, r.vendor_name, r.material,
+      r.specification, r.quantity, r.unit, r.rate, r.amount, STATUS_LABEL[r.status] || r.status])].map((row) => row.map(cell).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = "purchase_history.csv"; a.click();
+  };
+};
+
+// ============================================================ merged sections
+function tabBar(v, key, items) {
+  v.innerHTML = `<div class="row" style="margin-bottom:14px"><div class="pill-tabs">${items.map(([id, label]) =>
+    `<button data-sub="${id}" class="${S[key] === id ? "active" : ""}">${label}</button>`).join("")}</div></div><div class="tab-body"></div>`;
+  $$("[data-sub]", v).forEach((b) => (b.onclick = () => { S[key] = b.dataset.sub; render(); }));
+  return $(".tab-body", v);
+}
+
+VIEWS.vendors = async (v) => {
+  const body = tabBar(v, "vendorTab", [["directory", "Vendor directory"], ["quotes", "Quotation comparison"]]);
+  await (S.vendorTab === "quotes" ? viewQuotes : viewVendorDirectory)(body);
+};
+
+VIEWS.packages = async (v) => {
+  const body = tabBar(v, "packageTab", [["list", "Packages"], ["contractors", "By contractor"]]);
+  await (S.packageTab === "contractors" ? viewContractors : viewPackageList)(body);
 };
 
 // ============================================================ boot
@@ -1151,7 +1280,8 @@ async function boot() {
   if (qs.get("list")) store.set("listId", Number(qs.get("list")));
   if (qs.get("view")) { store.set("view", qs.get("view")); S.view = qs.get("view"); }
   if (qs.get("actor") && !store.get("actor")) store.set("actor", qs.get("actor"));
-  if (qs.get("embedded")) document.body.classList.add("embedded");
+  if (qs.get("embedded")) { document.body.classList.add("embedded"); S.embedded = true; }
+  S.view = resolveView(S.view);
   $("#actorInput").value = store.get("actor", "");
   $("#actorInput").oninput = (e) => store.set("actor", e.target.value);
   $("#menuBtn").onclick = () => $("#sidebar").classList.toggle("open");

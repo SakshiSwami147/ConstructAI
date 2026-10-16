@@ -106,6 +106,10 @@ class ProcurementItem(Base):
     unit: Mapped[str] = mapped_column(String(30))
     est_rate: Mapped[float | None] = mapped_column(Float)
     notes: Mapped[str | None] = mapped_column(Text)
+    # vendor chosen for this material on the Materials list (used by "Place orders")
+    vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendors.id", ondelete="SET NULL"))
+    agreed_rate: Mapped[float | None] = mapped_column(Float)
+    quotation_id: Mapped[int | None] = mapped_column(Integer)
     plist: Mapped[ProcurementList] = relationship(back_populates="items")
 
 
