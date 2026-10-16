@@ -24,6 +24,7 @@ class ExtractedElement(BaseModel):
 
     element_type: str = Field(validation_alias=AliasChoices("element_type", "category"))
     element_id: str | None = None
+    host_element_id: str | None = None  # wall hosting this door/window/opening (used for deductions)
     description: str
     location: str | None = None
     dimensions: Dimensions | None = None

@@ -1,6 +1,6 @@
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 
-type Screen = "upload" | "extraction" | "boq" | "approval" | "bom";
+type Screen = "upload" | "extraction" | "boq" | "approval" | "bom" | "procurement";
 type BOQStatus = "DRAFT" | "REVIEW" | "APPROVED";
 type ElementReviewStatus = "pending" | "approved" | "rejected";
 
@@ -83,7 +83,21 @@ type BOMResult = {
   };
   total_cost: number;
   by_category: { Category: string; "Cost (Rs)": number }[];
+  deductions?: { "BOQ item": string; "Opening BOQ item": string; Opening: string; "Opening area each (m2)": number; Count: number; "Deducted (m2)": number; Rule: string }[];
+  suggestions?: { "For BOQ item": string; "Missing work": string; "Suggested quantity": number | null; Unit: string; Basis: string }[];
 };
+
+type BOMApprovalRecord = {
+  boq_id: string;
+  approved_by: string;
+  comment: string | null;
+  warnings_acknowledged: string[];
+  material_count: number;
+  total_cost: number;
+  procurement: { project_id: number; project_name: string; bom_id: number; list_id: number; item_count: number; bom_name: string };
+};
+
+type BOMApprovalForm = { approved_by: string; comment: string; acknowledge_warnings: boolean; project_name: string; project_code: string };
 
 type MappingRecipe = {
   work_key: string;
@@ -99,6 +113,7 @@ const steps: { id: Screen; label: string; number: string }[] = [
   { id: "boq", label: "BOQ review", number: "03" },
   { id: "approval", label: "Approval", number: "04" },
   { id: "bom", label: "BOM & mapping", number: "05" },
+  { id: "procurement", label: "Procurement", number: "06" },
 ];
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -117,6 +132,7 @@ function App() {
   const [extraction, setExtraction] = useState<ExtractionResult | null>(null);
   const [boq, setBOQ] = useState<BOQ | null>(null);
   const [bom, setBOM] = useState<BOMResult | null>(null);
+  const [bomApproval, setBOMApproval] = useState<BOMApprovalRecord | null>(null);
   const [loading, setLoading] = useState<"extract" | "boq" | "review" | "bom" | null>(null);
   const [error, setError] = useState("");
 
@@ -125,6 +141,7 @@ function App() {
     setError("");
     setBOQ(null);
     setBOM(null);
+    setBOMApproval(null);
     setLoading("extract");
     const form = new FormData();
     form.append("file", selectedFile);
@@ -175,6 +192,7 @@ function App() {
       return { ...current, elements: next };
     });
     setBOM(null);
+    setBOMApproval(null);
     setBOQ(null);
   };
 
@@ -307,6 +325,7 @@ function App() {
       const result = await request<BOQ>(`/boqs/${boq.boq_id}/reopen`, { method: "POST" });
       setBOQ(result);
       setBOM(null);
+      setBOMApproval(null);
       setScreen("boq");
       setError("");
     } catch (requestError) {
@@ -324,6 +343,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ item_number: itemNumber, work_key: workKey }),
       });
+      setBOMApproval(null); // server invalidates an earlier approval when mapping changes
       const result = await request<BOMResult>(`/boqs/${boq.boq_id}/bom`, { method: "POST" });
       setBOM(result);
     } catch (requestError) {
@@ -333,8 +353,27 @@ function App() {
     }
   };
 
+  const approveBOM = async (form: BOMApprovalForm) => {
+    if (!boq) return;
+    setError("");
+    setLoading("bom");
+    try {
+      const record = await request<BOMApprovalRecord>(`/boqs/${boq.boq_id}/bom/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, comment: form.comment || null, project_code: form.project_code || null }),
+      });
+      setBOMApproval(record);
+      setScreen("procurement");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "BOM approval failed");
+    } finally {
+      setLoading(null);
+    }
+  };
+
   const activeStep = steps.findIndex((step) => step.id === screen);
-  const canNavigate = (step: Screen) => step === "upload" || (step === "extraction" && !!extraction) || (step === "boq" && !!boq) || (step === "approval" && boq?.status === "APPROVED") || (step === "bom" && !!bom);
+  const canNavigate = (step: Screen) => step === "upload" || (step === "extraction" && !!extraction) || (step === "boq" && !!boq) || (step === "approval" && boq?.status === "APPROVED") || (step === "bom" && !!bom) || (step === "procurement" && !!bomApproval);
 
   return (
     <main className="app-shell">
@@ -361,7 +400,7 @@ function App() {
 
         <section className="content">
           <div className="content-header">
-            <div><p className="eyebrow">Technical intelligence / {steps[activeStep].number}</p><h1>{screen === "upload" ? "Start with the source drawing." : screen === "extraction" ? "Review extracted elements." : screen === "boq" ? "Shape the draft BOQ." : screen === "approval" ? "BOQ is ready for approval." : "Map quantities to materials."}</h1></div>
+            <div><p className="eyebrow">Technical intelligence / {steps[activeStep].number}</p><h1>{screen === "upload" ? "Start with the source drawing." : screen === "extraction" ? "Review extracted elements." : screen === "boq" ? "Shape the draft BOQ." : screen === "approval" ? "BOQ is ready for approval." : screen === "procurement" ? "Procure from the approved BOM." : "Map quantities to materials."}</h1></div>
             {boq && <span className={`status-badge ${boq.status.toLowerCase()}`}><span /> {boq.status}</span>}
           </div>
 
@@ -371,7 +410,8 @@ function App() {
           {screen === "extraction" && extraction && <HumanReviewExtractionScreen extraction={extraction} loading={loading === "boq" || loading === "review"} onEdit={updateExtractionElement} onReview={reviewElement} onGenerate={generateBOQ} />}
           {screen === "boq" && boq && <PersistentBOQScreen boq={boq} onEdit={updateItem} onSave={saveBOQItem} onSubmit={submitForReview} onApprove={approve} />}
           {screen === "approval" && boq && <ApprovalScreen boq={boq} loading={loading === "bom"} onBack={() => setScreen("boq")} onGenerateBOM={generateBOM} />}
-          {screen === "bom" && boq && bom && <BOMScreen boq={boq} bom={bom} loading={loading === "bom"} onBack={() => setScreen("approval")} onReviewBOQ={reopenBOQ} onMapItem={mapBOQItem} onError={setError} />}
+          {screen === "bom" && boq && bom && <BOMScreen boq={boq} bom={bom} loading={loading === "bom"} onBack={() => setScreen("approval")} onReviewBOQ={reopenBOQ} onMapItem={mapBOQItem} onError={setError} approval={bomApproval} onApproveBOM={approveBOM} onOpenProcurement={() => setScreen("procurement")} />}
+          {screen === "procurement" && bomApproval && <ProcurementScreen approval={bomApproval} onBack={() => setScreen("bom")} />}
         </section>
       </div>
     </main>
@@ -455,7 +495,7 @@ function ApprovalScreen({ boq, loading, onBack, onGenerateBOM }: { boq: BOQ; loa
   return <div className="screen approval-screen"><div className="approval-mark">✓</div><p className="eyebrow">Final status</p><h2>Approved BOQ</h2><p className="approval-copy">The reviewed quantities for <strong>{boq.source_name}</strong> are ready to move into material mapping.</p><div className="approval-summary"><div><span>Status</span><strong className="approved-label">APPROVED</strong></div><div><span>Approved lines</span><strong>{boq.items.length}</strong></div><div><span>Traceability</span><strong>Complete</strong></div></div><div className="action-row"><button className="secondary-button" type="button" onClick={onBack}>View approved BOQ</button><button className="primary-button" type="button" onClick={onGenerateBOM} disabled={loading}>{loading ? "Mapping materials..." : "Generate BOM →"}</button></div></div>;
 }
 
-function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError }: { boq: BOQ; bom: BOMResult; loading: boolean; onBack: () => void; onReviewBOQ: () => void; onMapItem: (itemNumber: number, workKey: string) => void; onError: (error: string) => void }) {
+function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError, approval, onApproveBOM, onOpenProcurement }: { boq: BOQ; bom: BOMResult; loading: boolean; onBack: () => void; onReviewBOQ: () => void; onMapItem: (itemNumber: number, workKey: string) => void; onError: (error: string) => void; approval: BOMApprovalRecord | null; onApproveBOM: (form: BOMApprovalForm) => void; onOpenProcurement: () => void }) {
   const formatINR = (amount: number) => `₹${amount.toLocaleString("en-IN")}`;
   const [recipeOptions, setRecipeOptions] = useState<Record<number, MappingRecipe[]>>({});
   const unmatchedCount = bom.mapping.filter((item) => item.Status === "NO MATCH").length;
@@ -500,14 +540,53 @@ function BOMScreen({ boq, bom, loading, onBack, onReviewBOQ, onMapItem, onError 
           return <tr key={item["BOQ item"]}><td>{item["BOQ item"]}</td><td>{item.Description}</td><td>{item["Matched work item"]}</td><td>{Math.round(item.Confidence * 100)}%</td><td><span className={`type-tag ${item.Status === "OK" || item.Status === "MANUAL" ? "good-text" : "warning-text"}`}>{item.Status}</span></td><td>{needsConfirmation ? <select aria-label={`Select and confirm recipe for BOQ item ${itemNumber}`} value="" disabled={loading || !recipeOptions[itemNumber]} onChange={(event) => onMapItem(itemNumber, event.target.value)}><option value="">{recipeOptions[itemNumber] ? "Select verified recipe" : "Loading recipes..."}</option>{(recipeOptions[itemNumber] ?? []).filter((recipe) => recipe.unit === unit).map((recipe) => <option key={recipe.work_key} value={recipe.work_key}>{recipe.description} ({recipe.unit})</option>)}</select> : item.Status === "MANUAL" ? <span>Human-selected; verify the match.</span> : "—"}</td></tr>;
         })}
       </tbody></table></div>
+      {(bom.deductions ?? []).length > 0 && <><h3>Opening deductions</h3><div className="table-wrap"><table><thead><tr><th>Host BOQ item</th><th>Opening</th><th>Area each (m2)</th><th>Count</th><th>Deducted (m2)</th><th>Rule</th></tr></thead><tbody>
+        {(bom.deductions ?? []).map((d) => <tr key={`${d["BOQ item"]}-${d["Opening BOQ item"]}-${d.Rule}`}><td>{d["BOQ item"]}</td><td>{d["Opening BOQ item"]} · {d.Opening}</td><td>{d["Opening area each (m2)"]}</td><td>{d.Count}</td><td>{d["Deducted (m2)"]}</td><td className="calculation">{d.Rule}</td></tr>)}
+      </tbody></table></div></>}
+      {(bom.suggestions ?? []).length > 0 && <><h3>Possibly missing scope — not included in the BOM</h3><div className="table-wrap"><table><thead><tr><th>For BOQ item</th><th>Missing work</th><th>Suggested quantity</th><th>Basis</th></tr></thead><tbody>
+        {(bom.suggestions ?? []).map((sg) => <tr key={`${sg["For BOQ item"]}-${sg["Missing work"]}`}><td>{sg["For BOQ item"]}</td><td>{sg["Missing work"]}</td><td>{sg["Suggested quantity"] === null ? "From drawings" : `${sg["Suggested quantity"]} ${sg.Unit}`}</td><td className="calculation">{sg.Basis}</td></tr>)}
+      </tbody></table></div></>}
       <h3>Material requirements</h3>
       {bom.lines.length > 0 && bom.validation.status === "ready" ? <div className="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Net qty</th><th>Wastage</th><th>Order qty</th><th>Unit</th><th>Rate</th><th>Estimated cost</th><th>BOQ items</th></tr></thead><tbody>
         {bom.lines.map((line) => <tr key={line.Material}><td>{line.Material}</td><td>{line.Category}</td><td>{line["Net qty"]}</td><td>{line["Wastage %"]}%</td><td>{line["Order qty"]}</td><td>{line.Unit}</td><td>{formatINR(line["Rate (Rs)"])}</td><td>{formatINR(line["Cost (Rs)"])}</td><td>{line["Used in BOQ items"]}</td></tr>)}
       </tbody></table></div> : bom.validation.status === "blocked" ? <div className="issues"><strong>Material quantities and costs are withheld.</strong><span>Resolve the mapping and measurement review items above, then regenerate the BOM to calculate a complete estimate.</span></div> : <div className="issues"><strong>No materials were mapped.</strong><span>Check the BOQ mapping warnings and add a matching recipe to the project catalog.</span></div>}
       {bom.validation.status === "ready" && bom.by_category.length > 0 && <><h3>Estimated cost by category</h3><div className="table-wrap"><table><thead><tr><th>Category</th><th>Estimated cost</th></tr></thead><tbody>{bom.by_category.map((category) => <tr key={category.Category}><td>{category.Category}</td><td>{formatINR(category["Cost (Rs)"])}</td></tr>)}</tbody></table></div></>}
+      {bom.validation.status === "ready" && bom.lines.length > 0 && <BOMApprovalPanel boq={boq} bom={bom} loading={loading} approval={approval} onApprove={onApproveBOM} onOpen={onOpenProcurement} />}
       <div className="action-row"><span className="muted">Material rates are prototype catalog estimates, not confirmed company rates.</span><div><button className="secondary-button" type="button" onClick={onBack}>Back to approved BOQ</button> {bom.validation.errors.length > 0 && <button className="secondary-button" type="button" onClick={onReviewBOQ}>Reopen BOQ to edit</button>}</div></div>
     </div>
   );
+}
+
+function BOMApprovalPanel({ boq, bom, loading, approval, onApprove, onOpen }: { boq: BOQ; bom: BOMResult; loading: boolean; approval: BOMApprovalRecord | null; onApprove: (form: BOMApprovalForm) => void; onOpen: () => void }) {
+  const [form, setForm] = useState<BOMApprovalForm>({ approved_by: "", comment: "", acknowledge_warnings: false, project_name: boq.source_name, project_code: "" });
+  const warnings = bom.validation.warnings;
+  const blockedReason = !form.approved_by.trim() ? "Enter the approver name" : warnings.length > 0 && !form.acknowledge_warnings ? "Acknowledge the warnings above" : "";
+  if (approval) {
+    return <div className="approval-panel approved"><p className="eyebrow">Step 06 · BOM approved</p><h3>Approved by {approval.approved_by}</h3>
+      <p className="muted">{approval.material_count} materials handed to procurement project “{approval.procurement.project_name}”. Reopen the BOQ to change quantities and approve again.</p>
+      <div className="action-row"><span /><button className="primary-button" type="button" onClick={onOpen}>Open procurement →</button></div></div>;
+  }
+  return <div className="approval-panel"><p className="eyebrow">Human approval before procurement</p><h3>Approve BOM for procurement</h3>
+    <p className="muted">Confirms the material quantities above are reviewed. The BOM becomes a read-only snapshot in procurement; vendors, prices and contracts are handled there with their own approvals.</p>
+    <div className="approval-form">
+      <label><span>Approved by *</span><input value={form.approved_by} onChange={(e) => setForm({ ...form, approved_by: e.target.value })} placeholder="Reviewer name" aria-label="Approved by" /></label>
+      <label><span>Procurement project</span><input value={form.project_name} onChange={(e) => setForm({ ...form, project_name: e.target.value })} aria-label="Procurement project name" /></label>
+      <label><span>Project code</span><input value={form.project_code} onChange={(e) => setForm({ ...form, project_code: e.target.value })} placeholder="Optional, used in PO numbers" aria-label="Project code" /></label>
+      <label className="wide"><span>Comment</span><input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} placeholder="Optional" aria-label="Approval comment" /></label>
+      {warnings.length > 0 && <label className="wide check"><input type="checkbox" checked={form.acknowledge_warnings} onChange={(e) => setForm({ ...form, acknowledge_warnings: e.target.checked })} aria-label="Acknowledge warnings" /> <span>I have reviewed the {warnings.length} warning(s) listed above</span></label>}
+    </div>
+    <div className="action-row"><span className="muted">{blockedReason}</span><button className="primary-button" type="button" disabled={!!blockedReason || loading} onClick={() => onApprove(form)}>{loading ? "Approving..." : "Approve BOM & start procurement →"}</button></div></div>;
+}
+
+function ProcurementScreen({ approval, onBack }: { approval: BOMApprovalRecord; onBack: () => void }) {
+  const p = approval.procurement;
+  const src = `${API_BASE}/procurement/ui/?embedded=1&project=${p.project_id}&list=${p.list_id}&view=procurement&actor=${encodeURIComponent(approval.approved_by)}`;
+  return <div className="screen procurement-screen">
+    <div className="data-strip"><div><span>Approved by</span><strong>{approval.approved_by}</strong></div><div><span>Materials handed over</span><strong>{p.item_count}</strong></div><div><span>Procurement project</span><strong>{p.project_name}</strong></div></div>
+    <div className="section-intro compact"><span className="section-index">06</span><div><h2>Procurement</h2><p>Edit the procurement list, compare vendor quotations, raise purchase orders, club packages and draft contracts. Each document needs its own review and approval; nothing is signed or sent automatically.</p></div></div>
+    <iframe className="procurement-frame" title="Procurement workspace" src={src} />
+    <div className="action-row"><button className="secondary-button" type="button" onClick={onBack}>Back to BOM</button><a className="secondary-button" href={src.replace("embedded=1&", "")} target="_blank" rel="noopener">Open in new tab ↗</a></div>
+  </div>;
 }
 
 export default App;

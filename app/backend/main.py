@@ -26,12 +26,17 @@ from constructai.extraction.text_providers import (
 )
 from constructai.extraction.vision import OpenCVFloorPlanDetector, SUPPORTED_VISUAL_EXTENSIONS
 from constructai.agents.mapping_agent import MappingAgent
+from constructai.procurement.app import create_procurement_app
+from constructai.procurement.handoff import handoff_approved_bom
 
 
 app = FastAPI(
     title="ConstructAI_MLCV API",
     version="0.1.0",
 )
+
+# Step 06 — procurement & vendor contracts (API: /procurement/api/..., UI: /procurement/ui/)
+app.mount("/procurement", create_procurement_app())
 
 extraction_agent = ExtractionAgent(
     [PyMuPDFTextProvider(), SvgTextProvider()],
@@ -47,10 +52,12 @@ extraction_revisions: dict[str, int] = {}
 boq_sessions: dict[str, BOQ] = {}
 boq_extraction_revisions: dict[str, int] = {}
 boq_recipe_overrides: dict[str, dict[int, str]] = {}
+bom_approvals: dict[str, dict] = {}  # boq_id -> human BOM approval + procurement handoff record
 
 
 class ExtractedElementEdit(BaseModel):
     element_type: str | None = None
+    host_element_id: str | None = None
     description: str | None = None
     location: str | None = None
     dimensions: Dimensions | None = None
@@ -62,6 +69,14 @@ class ExtractedElementEdit(BaseModel):
 
 class ElementReviewDecision(BaseModel):
     decision: Literal["approved", "rejected"]
+
+
+class BOMApproval(BaseModel):
+    approved_by: str = Field(min_length=1, max_length=100)
+    comment: str | None = None
+    acknowledge_warnings: bool = False
+    project_name: str | None = None
+    project_code: str | None = None
 
 
 class BOQRecipeMapping(BaseModel):
@@ -300,6 +315,7 @@ def reopen_approved_boq(boq_id: str) -> JSONResponse:
     reopened = boq.model_copy(update={"status": BOQStatus.DRAFT})
     boq_sessions[boq_id] = reopened
     boq_recipe_overrides.pop(boq_id, None)
+    bom_approvals.pop(boq_id, None)
     return JSONResponse(content=jsonable_encoder(reopened, custom_encoder={Decimal: float}))
 
 
@@ -363,6 +379,7 @@ def set_boq_recipe_mapping(boq_id: str, mapping: BOQRecipeMapping) -> JSONRespon
         )
 
     boq_recipe_overrides.setdefault(boq_id, {})[mapping.item_number] = mapping.work_key
+    bom_approvals.pop(boq_id, None)  # a mapping change invalidates an earlier BOM approval
     return JSONResponse(
         content={
             "item_number": mapping.item_number,
@@ -392,3 +409,61 @@ def generate_bom(
             custom_encoder={Decimal: float},
         )
     )
+
+
+# --------------------------------------------------------------------------- step 06: BOM approval -> procurement
+@app.post("/boqs/{boq_id}/bom/approve", tags=["procurement"], status_code=201)
+def approve_bom_for_procurement(boq_id: str, approval: BOMApproval) -> JSONResponse:
+    """Human-in-the-loop gate: a named reviewer approves the BOM, which is then handed to procurement.
+
+    The BOM is regenerated on the server from the approved BOQ (client data is never trusted).
+    Blocked BOMs cannot be approved; warnings must be explicitly acknowledged.
+    """
+    boq = boq_sessions.get(boq_id)
+    if boq is None:
+        raise HTTPException(status_code=404, detail="BOQ review session was not found")
+    _require_current_boq(boq)
+    if boq.status.value != "APPROVED":
+        raise HTTPException(status_code=409, detail="The BOQ must be approved before the BOM can be approved")
+    approved_by = approval.approved_by.strip()
+    if not approved_by:
+        raise HTTPException(status_code=422, detail="Enter the name of the person approving the BOM")
+    if boq_id in bom_approvals:
+        raise HTTPException(status_code=409, detail="This BOM is already approved and handed to procurement. "
+                                                    "Reopen the BOQ to make changes and approve again.")
+    try:
+        bom = mapping_agent.run(boq, boq_recipe_overrides.get(boq_id, {}))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if bom.validation["status"] != "ready" or not bom.lines:
+        raise HTTPException(status_code=409, detail="The BOM has blocking review items. Resolve them before approval.")
+    warnings = bom.validation["warnings"]
+    if warnings and not approval.acknowledge_warnings:
+        raise HTTPException(status_code=409, detail=f"Review and acknowledge {len(warnings)} BOM warning(s) "
+                                                    "before approving for procurement.")
+    handoff = handoff_approved_bom(
+        jsonable_encoder(bom), boq_id=boq_id, extraction_id=boq.extraction_id, source_name=boq.source_name,
+        approved_by=approved_by, comment=approval.comment, project_name=approval.project_name,
+        project_code=approval.project_code,
+    )
+    record = {
+        "boq_id": boq_id, "approved_by": approved_by, "comment": approval.comment,
+        "warnings_acknowledged": warnings, "material_count": len(bom.lines), "total_cost": bom.total_cost,
+        "procurement": handoff,
+    }
+    bom_approvals[boq_id] = record
+    return JSONResponse(status_code=201, content=jsonable_encoder(record))
+
+
+@app.get("/boqs/{boq_id}/bom/approval", tags=["procurement"])
+def get_bom_approval(boq_id: str) -> JSONResponse:
+    boq = boq_sessions.get(boq_id)
+    record = bom_approvals.get(boq_id)
+    if boq is None or record is None:
+        raise HTTPException(status_code=404, detail="This BOM has not been approved for procurement")
+    try:
+        _require_current_boq(boq)
+    except HTTPException:
+        bom_approvals.pop(boq_id, None)  # source changed after approval
+        raise HTTPException(status_code=404, detail="The source changed after approval; approve the BOM again")
+    return JSONResponse(content=jsonable_encoder(record))
