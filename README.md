@@ -2,6 +2,8 @@
 
 Milestone 1 foundation for the drawing-to-BOQ and material workflow.
 
+For the complete technical overview—including the implemented workflow, architecture, data rules, persistence model, limitations, and file-by-file responsibilities—see [PROJECT_TECHNICAL_GUIDE.md](PROJECT_TECHNICAL_GUIDE.md).
+
 ## Backend
 
 ```powershell
