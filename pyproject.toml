@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ConstructAI_MLCV"
+version = "0.1.0"
+description = "ConstructAI_MLCV Milestone 1 foundation"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "PyMuPDF>=1.24,<2.0",
+    "pydantic>=2.9,<3.0",
+    "python-multipart>=0.0.9,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "opencv-python-headless>=4.10,<5.0",
+    "SQLAlchemy>=2.0,<3.0",
+    "Jinja2>=3.1,<4.0",
+    "reportlab>=4.0,<5.0",
+    "Pillow>=10.0,<13.0",
+    # Python wrapper only - the Tesseract OCR program must be installed separately.
+    "pytesseract>=0.3.10,<1.0",
+    "python-dotenv>=1.0,<2.0",
+]
+
+[project.optional-dependencies]
+vision = [
+    "pytesseract>=0.3.10,<1.0",
+]
+dev = [
+    "httpx>=0.27,<1.0",
+    "pytest>=8.3,<9.0",
+    "opencv-python-headless>=4.10,<5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+constructai = ["procurement/ui/*", "procurement/templates/*"]
